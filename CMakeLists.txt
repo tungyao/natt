@@ -8,9 +8,8 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # ── Dependencies ──────────────────────────────────────────────
 include(cmake/dependencies.cmake)
 
-# ── Sources ──────────────────────────────────────────────────
-set(SOURCES
-    cmd/server/main.cpp
+# ── Library sources (shared between executables) ─────────────
+set(LIB_SOURCES
     src/config/config.cpp
     src/repository/database.cpp
     src/repository/user_repo.cpp
@@ -28,9 +27,13 @@ set(SOURCES
     src/nat/node_registry.cpp
     src/nat/message_dispatcher.cpp
     src/nat/heartbeat_monitor.cpp
+    src/stun/StunServer.cpp
+    src/client/WsClient.cpp
+    src/client/UdpPuncher.cpp
+    src/client/TestClient.cpp
 )
 
-set(HEADERS
+set(LIB_HEADERS
     src/config/config.h
     src/model/user.h
     src/model/device.h
@@ -51,28 +54,67 @@ set(HEADERS
     src/nat/node_registry.h
     src/nat/message_dispatcher.h
     src/nat/heartbeat_monitor.h
+    src/stun/StunServer.h
+    src/client/WsClient.h
+    src/client/UdpPuncher.h
+    src/client/TestClient.h
 )
 
-# ── Executable ───────────────────────────────────────────────
-add_executable(natmesh-server ${SOURCES} ${HEADERS})
-target_include_directories(natmesh-server PRIVATE
+# ── Common include + link ────────────────────────────────────
+set(COMMON_INCLUDES
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-target_link_libraries(natmesh-server PRIVATE
+set(COMMON_LIBS
     Boost::headers
     Boost::system
     nlohmann_json::nlohmann_json
     spdlog::spdlog
-    yaml-cpp
-    sqlite3
 )
 
-# ── Compiler options ─────────────────────────────────────────
-target_compile_options(natmesh-server PRIVATE
-    -Wall -Wextra -Wpedantic
-    -Wno-unused-parameter
+# ── natmesh-server (with DB, yaml-cpp) ──────────────────────
+set(SERVER_SOURCES ${LIB_SOURCES})  # copy
+list(REMOVE_ITEM SERVER_SOURCES
+    src/client/WsClient.cpp
+    src/client/UdpPuncher.cpp
+    src/client/TestClient.cpp
+    src/stun/StunServer.cpp
+)
+list(APPEND SERVER_SOURCES cmd/server/main.cpp)
+
+add_executable(natmesh-server ${SERVER_SOURCES} ${LIB_HEADERS})
+target_include_directories(natmesh-server PRIVATE ${COMMON_INCLUDES})
+target_link_libraries(natmesh-server PRIVATE ${COMMON_LIBS} yaml-cpp sqlite3)
+target_compile_options(natmesh-server PRIVATE -Wall -Wextra -Wpedantic -Wno-unused-parameter)
+
+# ── stun_server ──────────────────────────────────────────────
+set(STUN_SOURCES
+    cmd/stun_server/main.cpp
+    src/stun/StunServer.cpp
 )
 
+add_executable(stun_server ${STUN_SOURCES} src/stun/StunServer.h)
+target_include_directories(stun_server PRIVATE ${COMMON_INCLUDES})
+target_link_libraries(stun_server PRIVATE ${COMMON_LIBS})
+target_compile_options(stun_server PRIVATE -Wall -Wextra -Wpedantic -Wno-unused-parameter)
 
+# ── test_client ──────────────────────────────────────────────
+set(CLIENT_SOURCES
+    cmd/test_client/main.cpp
+    src/client/WsClient.cpp
+    src/client/UdpPuncher.cpp
+    src/client/TestClient.cpp
+    src/stun/StunServer.cpp
+)
+
+# Need StunServer.h for STUN query (included from TestClient)
+add_executable(test_client ${CLIENT_SOURCES}
+    src/client/WsClient.h
+    src/client/UdpPuncher.h
+    src/client/TestClient.h
+    src/stun/StunServer.h
+)
+target_include_directories(test_client PRIVATE ${COMMON_INCLUDES})
+target_link_libraries(test_client PRIVATE ${COMMON_LIBS})
+target_compile_options(test_client PRIVATE -Wall -Wextra -Wpedantic -Wno-unused-parameter)
