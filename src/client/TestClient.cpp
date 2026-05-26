@@ -149,6 +149,8 @@ bool TestClient::run(const Options& opts) {
         spdlog::info("WsClient reader: <- type={}", type);
         if (type == "punch_start") {
             on_punch_start(data);
+        } else if (type == "virtual_ip_assigned") {
+            on_virtual_ip_assigned(data);
         } else if (type == "error") {
             spdlog::error("Server error: {}", data.value("message", ""));
         }
@@ -388,11 +390,21 @@ void TestClient::enter_relay_mode() {
 
     // Set up relay callbacks on the puncher (posted to puncher_ioc_)
     net::post(puncher_ioc_, [this]() {
-        puncher_->setRelayPacketCallback([this](const std::string& from,
-                                                  const std::string& payload,
-                                                  int64_t seq) {
-            on_relay_packet(from, payload, seq);
-        });
+        if (opts_.enable_tun && tun_ready_) {
+            // TUN mode: relay packets go to TUN interface
+            puncher_->setRelayPacketCallback([this](const std::string& from,
+                                                      const std::string& payload,
+                                                      int64_t seq) {
+                relay_to_tun(from, payload, seq);
+            });
+        } else {
+            // Test message mode
+            puncher_->setRelayPacketCallback([this](const std::string& from,
+                                                      const std::string& payload,
+                                                      int64_t seq) {
+                on_relay_packet(from, payload, seq);
+            });
+        }
         puncher_->setRelayEventCallback([this](const std::string& event,
                                                   const nlohmann::json& data) {
             on_relay_event(event, data);
@@ -481,5 +493,139 @@ void TestClient::schedule_relay_test_message() {
         if (ec) return;
         send_relay_test_message();
         schedule_relay_test_message();
+    });
+}
+
+// ── TUN Bridge ─────────────────────────────────────────────
+
+void TestClient::on_virtual_ip_assigned(const nlohmann::json& data) {
+    virtual_ip_ = data.value("virtual_ip", std::string());
+    subnet_ = data.value("subnet", "10.0.0.0/16");
+
+    if (virtual_ip_.empty()) {
+        spdlog::warn("Received empty virtual_ip");
+        return;
+    }
+
+    spdlog::info("═══════════════════════════════════════════");
+    spdlog::info("  Virtual IP assigned: {} / {}", virtual_ip_, subnet_);
+    spdlog::info("═══════════════════════════════════════════");
+
+    if (opts_.enable_tun) {
+        start_tun_bridge();
+    }
+}
+
+void TestClient::start_tun_bridge() {
+    if (virtual_ip_.empty()) {
+        spdlog::warn("TUN bridge: no virtual IP, cannot start");
+        return;
+    }
+
+    // Parse subnet prefix
+    int prefix = 16;
+    auto slash = subnet_.find('/');
+    if (slash != std::string::npos) {
+        prefix = std::stoi(subnet_.substr(slash + 1));
+    }
+
+    // Create TUN interface (runs on puncher_ioc_)
+    net::post(puncher_ioc_, [this, prefix]() {
+        tun_ = TunInterface::create(puncher_ioc_);
+        if (!tun_->open(opts_.tun_name, virtual_ip_, prefix, opts_.tun_mtu)) {
+            spdlog::error("TUN bridge: failed to create TUN interface");
+            tun_.reset();
+            return;
+        }
+
+        tun_ready_ = true;
+        spdlog::info("TUN bridge: {} configured with {}/{}",
+                     tun_->interfaceName(), virtual_ip_, prefix);
+
+        // Add route for the virtual subnet
+        tun_->addRoute(subnet_);
+
+        // Start reading from TUN (async loop on puncher_ioc_)
+        do_tun_read();
+    });
+}
+
+void TestClient::do_tun_read() {
+    if (!tun_ready_ || !tun_) return;
+
+    tun_->asyncRead(net::buffer(tun_read_buf_),
+        [this](boost::system::error_code ec, std::size_t len) {
+            if (ec) {
+                if (ec != boost::asio::error::operation_aborted) {
+                    spdlog::error("TUN bridge: read error: {}", ec.message());
+                }
+                return;
+            }
+
+            // Got an IP packet from TUN — forward via relay
+            std::vector<uint8_t> packet(
+                tun_read_buf_.data(),
+                tun_read_buf_.data() + len);
+
+            tun_to_relay(packet);
+
+            // Continue reading
+            do_tun_read();
+        });
+}
+
+void TestClient::tun_to_relay(const std::vector<uint8_t>& packet) {
+    if (!relay_registered_ || peer_node_id_.empty()) {
+        // No peer to send to yet
+        return;
+    }
+
+    // Encode the raw IP packet as base64 and send via relay
+    // For MVP: hex-encode the packet as payload
+    std::string payload_hex;
+    static const char hex_chars[] = "0123456789abcdef";
+    for (uint8_t byte : packet) {
+        payload_hex += hex_chars[byte >> 4];
+        payload_hex += hex_chars[byte & 0x0F];
+    }
+
+    ++relay_seq_;
+    auto from_id = opts_.node_id;
+    auto to_id = peer_node_id_;
+    auto seq = relay_seq_;
+    auto relay_ep = relay_ep_;
+
+    net::post(puncher_ioc_, [this, from_id, to_id, seq, payload_hex, relay_ep]() {
+        puncher_->sendRelayPacket(from_id, to_id, seq, payload_hex, relay_ep);
+        spdlog::debug("TUN bridge: relayed IP packet seq={} ({} bytes)", seq, payload_hex.size() / 2);
+    });
+}
+
+void TestClient::relay_to_tun(const std::string& from_node_id,
+                              const std::string& payload,
+                              int64_t seq) {
+    if (!tun_ready_ || !tun_) return;
+
+    // Decode hex payload back to raw IP packet
+    std::vector<uint8_t> packet;
+    packet.reserve(payload.size() / 2);
+    for (size_t i = 0; i < payload.size(); i += 2) {
+        auto h = payload[i];
+        auto l = payload[i + 1];
+        uint8_t byte = 0;
+        if (h >= '0' && h <= '9') byte |= (h - '0') << 4;
+        else if (h >= 'a' && h <= 'f') byte |= (h - 'a' + 10) << 4;
+        else if (h >= 'A' && h <= 'F') byte |= (h - 'A' + 10) << 4;
+        if (l >= '0' && l <= '9') byte |= (l - '0');
+        else if (l >= 'a' && l <= 'f') byte |= (l - 'a' + 10);
+        else if (l >= 'A' && l <= 'F') byte |= (l - 'A' + 10);
+        packet.push_back(byte);
+    }
+
+    // Write to TUN (async on puncher_ioc_)
+    net::post(puncher_ioc_, [this, packet = std::move(packet), seq]() {
+        if (!tun_ready_ || !tun_) return;
+        tun_->write(packet);
+        spdlog::debug("TUN bridge: wrote {} bytes from relay seq={}", packet.size(), seq);
     });
 }

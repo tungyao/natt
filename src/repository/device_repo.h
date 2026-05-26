@@ -17,6 +17,7 @@ public:
                                 const std::string& lan_ips_json);
     bool update_online_status(const std::string& node_id, bool online);
     bool update_heartbeat(const std::string& node_id);
+    bool update_virtual_ip(const std::string& node_id, const std::string& virtual_ip);
     bool remove(const std::string& node_id);
     std::vector<Device> find_offline_timeout(int timeout_sec);
 

@@ -5,8 +5,10 @@
 #include <string>
 #include <atomic>
 #include <thread>
+#include <vector>
 #include "client/WsClient.h"
 #include "client/UdpPuncher.h"
+#include "tun/TunInterface.h"
 
 namespace net = boost::asio;
 
@@ -35,6 +37,9 @@ public:
         std::string connect_node_id;  // empty = wait for incoming
         std::string local_addr;       // for local_addrs, separate by comma
         std::string relay_addr;       // e.g. "127.0.0.1:7000", empty = no relay fallback
+        bool enable_tun = false;      // enable TUN virtual interface
+        std::string tun_name = "nat%d";
+        int tun_mtu = 1300;
     };
 
     explicit TestClient();
@@ -66,6 +71,15 @@ private:
     void send_relay_test_message();
     void schedule_relay_test_message();
 
+    // ── TUN mode ──
+    void on_virtual_ip_assigned(const nlohmann::json& data);
+    void start_tun_bridge();
+    void do_tun_read();
+    void tun_to_relay(const std::vector<uint8_t>& packet);
+    void relay_to_tun(const std::string& from_node_id,
+                      const std::string& payload,
+                      int64_t seq);
+
     std::shared_ptr<WsClient> ws_;
     std::shared_ptr<UdpPuncher> puncher_;
 
@@ -88,4 +102,11 @@ private:
     int64_t relay_seq_ = 0;
     bool relay_registered_{false};
     std::unique_ptr<net::steady_timer> relay_test_timer_;
+
+    // TUN bridge state
+    std::shared_ptr<TunInterface> tun_;
+    std::string virtual_ip_;
+    std::string subnet_;
+    std::array<char, 1500> tun_read_buf_;
+    std::atomic<bool> tun_ready_{false};
 };

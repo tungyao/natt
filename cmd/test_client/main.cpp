@@ -39,6 +39,12 @@ int main(int argc, char* argv[]) {
             opts.local_addr = argv[++i];
         } else if (arg == "--relay" && i + 1 < argc) {
             opts.relay_addr = argv[++i];
+        } else if (arg == "--tun") {
+            opts.enable_tun = true;
+        } else if (arg == "--tun-name" && i + 1 < argc) {
+            opts.tun_name = argv[++i];
+        } else if (arg == "--tun-mtu" && i + 1 < argc) {
+            opts.tun_mtu = std::stoi(argv[++i]);
         } else if (arg == "--help") {
             std::cout << "Usage: test_client \\\n"
                       << "  --node-id node-a \\\n"

@@ -7,6 +7,7 @@ struct Network {
     int64_t id = 0;
     std::string name;
     int64_t owner_id = 0;
+    std::string subnet;           // e.g. "10.0.0.0/16"
     std::string created_at;
     std::string updated_at;
 
@@ -14,6 +15,7 @@ struct Network {
         return {
             {"id", id},
             {"name", name},
+            {"subnet", subnet},
             {"owner_id", owner_id},
             {"created_at", created_at},
             {"updated_at", updated_at}

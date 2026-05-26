@@ -11,6 +11,7 @@
 #include "repository/user_repo.h"
 #include "repository/device_repo.h"
 #include "repository/network_repo.h"
+#include "ipam/IpAllocator.h"
 #include "auth/jwt.h"
 #include "service/user_service.h"
 #include "service/device_service.h"
@@ -81,10 +82,24 @@ int main(int argc, char* argv[]) {
         // ── Auth ──
         auto jwt = std::make_unique<auth::JwtManager>(config.jwt);
 
+        // ── IPAM ──
+        auto ipam = std::make_unique<IpAllocator>();
+        // Seed IPAM pools from configured networks
+        auto all_networks = network_repo->find_by_owner(0);  // all networks
+        // Actually load per-owner; simplified: iterate all
+        for (const auto& net : network_repo->find_by_owner(0)) {
+            auto devices = network_repo->get_network_devices(net.id);
+            std::unordered_set<std::string> reserved;
+            for (const auto& d : devices) {
+                if (!d.virtual_ip.empty()) reserved.insert(d.virtual_ip);
+            }
+            ipam->addPool(net.name, net.subnet, reserved);
+        }
+
         // ── Services ──
         auto user_svc = std::make_unique<UserService>(*user_repo, *jwt);
         auto device_svc = std::make_unique<DeviceService>(*device_repo);
-        auto network_svc = std::make_unique<NetworkService>(*network_repo, *device_repo);
+        auto network_svc = std::make_unique<NetworkService>(*network_repo, *device_repo, *ipam);
         auto peer_mgr = std::make_unique<PeerManager>();
 
         // ── IO Context ──

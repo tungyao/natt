@@ -79,6 +79,20 @@ HttpServer::HttpServer(net::io_context& ioc,
 
             spdlog::info("update_addr: node_id={}, ip={}:{}, {} local addrs",
                          node_id, public_ip, public_port, local_addrs.size());
+
+            // Send virtual IP assignment after device is fully registered
+            auto device = device_svc_.get_device(node_id);
+            if (device.has_value() && !device->virtual_ip.empty()) {
+                // Subnet comes from config.yaml — the IPAM pools section
+                // For MVP, the client will configure TUN with this IP + subnet
+                nlohmann::json vip_msg = {
+                    {"type", "virtual_ip_assigned"},
+                    {"virtual_ip", device->virtual_ip},
+                    {"subnet", "10.0.0.0/16"}  // default, overridden by config
+                };
+                session->send_json(vip_msg.dump());
+                spdlog::info("Sent virtual IP {} to node {}", device->virtual_ip, node_id);
+            }
         }
     );
 

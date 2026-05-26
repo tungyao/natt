@@ -6,6 +6,7 @@ NetworkRepo::NetworkRepo(Database& db) : db_(db) {}
 
 bool NetworkRepo::create(const std::string& name, int64_t owner_id) {
     const char* sql = "INSERT INTO networks (name, owner_id) VALUES (?, ?);";
+    // Subnet is set via a separate update call
     sqlite3_stmt* stmt = nullptr;
 
     if (sqlite3_prepare_v2(db_.handle(), sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -27,7 +28,7 @@ bool NetworkRepo::create(const std::string& name, int64_t owner_id) {
 }
 
 std::optional<Network> NetworkRepo::find_by_id(int64_t id) {
-    const char* sql = "SELECT id, name, owner_id, created_at, updated_at FROM networks WHERE id = ?;";
+    const char* sql = "SELECT id, name, owner_id, subnet, created_at, updated_at FROM networks WHERE id = ?;";
     sqlite3_stmt* stmt = nullptr;
 
     if (sqlite3_prepare_v2(db_.handle(), sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -42,8 +43,10 @@ std::optional<Network> NetworkRepo::find_by_id(int64_t id) {
         n.id = sqlite3_column_int64(stmt, 0);
         n.name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
         n.owner_id = sqlite3_column_int64(stmt, 2);
-        n.created_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
-        n.updated_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
+        auto subnet_ptr = sqlite3_column_text(stmt, 3);
+        if (subnet_ptr) n.subnet = reinterpret_cast<const char*>(subnet_ptr);
+        n.created_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
+        n.updated_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
         result = std::move(n);
     }
 
@@ -52,7 +55,7 @@ std::optional<Network> NetworkRepo::find_by_id(int64_t id) {
 }
 
 std::vector<Network> NetworkRepo::find_by_owner(int64_t owner_id) {
-    const char* sql = "SELECT id, name, owner_id, created_at, updated_at FROM networks WHERE owner_id = ?;";
+    const char* sql = "SELECT id, name, owner_id, subnet, created_at, updated_at FROM networks WHERE owner_id = ?;";
     sqlite3_stmt* stmt = nullptr;
 
     std::vector<Network> results;
@@ -67,8 +70,10 @@ std::vector<Network> NetworkRepo::find_by_owner(int64_t owner_id) {
         n.id = sqlite3_column_int64(stmt, 0);
         n.name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
         n.owner_id = sqlite3_column_int64(stmt, 2);
-        n.created_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
-        n.updated_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
+        auto subnet_ptr = sqlite3_column_text(stmt, 3);
+        if (subnet_ptr) n.subnet = reinterpret_cast<const char*>(subnet_ptr);
+        n.created_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
+        n.updated_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
         results.push_back(std::move(n));
     }
 
@@ -117,7 +122,7 @@ bool NetworkRepo::remove_device(int64_t network_id, int64_t device_id) {
 std::vector<Device> NetworkRepo::get_network_devices(int64_t network_id) {
     const char* sql = R"(
         SELECT d.id, d.node_id, d.user_id, d.device_name, d.public_key,
-               d.public_ip, d.public_port, d.lan_ips, d.online, d.last_heartbeat,
+               d.public_ip, d.public_port, d.lan_ips, d.virtual_ip, d.online, d.last_heartbeat,
                d.created_at, d.updated_at
         FROM devices d
         JOIN network_devices nd ON d.id = nd.device_id
@@ -148,10 +153,12 @@ std::vector<Device> NetworkRepo::get_network_devices(int64_t network_id) {
         }
 
         d.online = sqlite3_column_int(stmt, 8) != 0;
-        auto hb = sqlite3_column_text(stmt, 9);
+        auto vi = sqlite3_column_text(stmt, 9);
+        if (vi) d.virtual_ip = reinterpret_cast<const char*>(vi);
+        auto hb = sqlite3_column_text(stmt, 10);
         if (hb) d.last_heartbeat = reinterpret_cast<const char*>(hb);
-        d.created_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 10));
-        d.updated_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 11));
+        d.created_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 11));
+        d.updated_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 12));
 
         results.push_back(std::move(d));
     }
@@ -174,6 +181,22 @@ bool NetworkRepo::is_device_in_network(int64_t network_id, int64_t device_id) {
     bool found = sqlite3_step(stmt) == SQLITE_ROW;
     sqlite3_finalize(stmt);
     return found;
+}
+
+bool NetworkRepo::update_subnet(int64_t network_id, const std::string& subnet) {
+    const char* sql = "UPDATE networks SET subnet=?, updated_at=datetime('now') WHERE id=?;";
+    sqlite3_stmt* stmt = nullptr;
+
+    if (sqlite3_prepare_v2(db_.handle(), sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        return false;
+    }
+
+    sqlite3_bind_text(stmt, 1, subnet.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 2, network_id);
+
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return rc == SQLITE_DONE;
 }
 
 bool NetworkRepo::remove(int64_t network_id) {

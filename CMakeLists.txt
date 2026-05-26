@@ -33,6 +33,8 @@ set(LIB_SOURCES
     src/client/TestClient.cpp
     src/relay/RelayRegistry.cpp
     src/relay/RelayServer.cpp
+    src/ipam/IpAllocator.cpp
+    src/tun/TunLinux.cpp
 )
 
 set(LIB_HEADERS
@@ -62,6 +64,8 @@ set(LIB_HEADERS
     src/client/TestClient.h
     src/relay/RelayRegistry.h
     src/relay/RelayServer.h
+    src/ipam/IpAllocator.h
+    src/tun/TunInterface.h
 )
 
 # ── Common include + link ────────────────────────────────────
@@ -86,6 +90,11 @@ list(REMOVE_ITEM SERVER_SOURCES
     src/stun/StunServer.cpp
     src/relay/RelayRegistry.cpp
     src/relay/RelayServer.cpp
+    src/tun/TunLinux.cpp
+)
+# Re-add ipam (needed by server) but keep tun/client removed
+list(APPEND SERVER_SOURCES
+    src/ipam/IpAllocator.cpp
 )
 list(APPEND SERVER_SOURCES cmd/server/main.cpp)
 
@@ -112,6 +121,7 @@ set(CLIENT_SOURCES
     src/client/UdpPuncher.cpp
     src/client/TestClient.cpp
     src/stun/StunServer.cpp
+    src/tun/TunLinux.cpp
 )
 
 # Need StunServer.h for STUN query (included from TestClient)
@@ -120,6 +130,7 @@ add_executable(test_client ${CLIENT_SOURCES}
     src/client/UdpPuncher.h
     src/client/TestClient.h
     src/stun/StunServer.h
+    src/tun/TunInterface.h
 )
 target_include_directories(test_client PRIVATE ${COMMON_INCLUDES})
 target_link_libraries(test_client PRIVATE ${COMMON_LIBS})

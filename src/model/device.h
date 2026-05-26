@@ -13,6 +13,7 @@ struct Device {
     std::string public_ip;
     int public_port = 0;
     std::vector<std::string> lan_ips;
+    std::string virtual_ip;       // assigned virtual IP (TUN)
     bool online = false;
     std::string last_heartbeat;
     std::string created_at;
@@ -26,6 +27,7 @@ struct Device {
             {"public_ip", public_ip},
             {"public_port", public_port},
             {"lan_ips", lan_ips},
+            {"virtual_ip", virtual_ip},
             {"online", online},
             {"last_heartbeat", last_heartbeat},
             {"created_at", created_at},
@@ -41,6 +43,7 @@ struct Device {
             {"public_ip", public_ip},
             {"public_port", public_port},
             {"lan_ips", lan_ips},
+            {"virtual_ip", virtual_ip},
             {"online", online}
         };
     }

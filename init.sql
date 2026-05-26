@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS devices (
     public_ip       TEXT NOT NULL DEFAULT '',
     public_port     INTEGER NOT NULL DEFAULT 0,
     lan_ips         TEXT NOT NULL DEFAULT '[]',  -- JSON array
+    virtual_ip      TEXT NOT NULL DEFAULT '',
     online          INTEGER NOT NULL DEFAULT 0,
     last_heartbeat  TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
@@ -29,6 +30,7 @@ CREATE TABLE IF NOT EXISTS networks (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     name        TEXT NOT NULL,
     owner_id    INTEGER NOT NULL,
+    subnet      TEXT NOT NULL DEFAULT '10.0.0.0/24',
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE

@@ -92,5 +92,23 @@ bool Database::initialize() {
         CREATE INDEX IF NOT EXISTS idx_network_devices_device ON network_devices(device_id);
     )";
 
-    return execute(schema);
+    // Run migrations for new columns (idempotent ALTER TABLE ADD COLUMN)
+    auto migrate = [&](const std::string& sql) {
+        char* err = nullptr;
+        sqlite3_exec(db_, sql.c_str(), nullptr, nullptr, &err);
+        if (err) {
+            // Ignore "duplicate column" errors — column already exists
+            std::string msg(err);
+            sqlite3_free(err);
+            if (msg.find("duplicate column") == std::string::npos &&
+                msg.find("already exists") == std::string::npos) {
+                spdlog::warn("Migration: {} — {}", sql.substr(0, 60), msg);
+            }
+        }
+    };
+
+    migrate("ALTER TABLE devices ADD COLUMN virtual_ip TEXT NOT NULL DEFAULT '';");
+    migrate("ALTER TABLE networks ADD COLUMN subnet TEXT NOT NULL DEFAULT '10.0.0.0/24';");
+
+    return true;
 }

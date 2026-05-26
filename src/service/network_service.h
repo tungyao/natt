@@ -2,6 +2,7 @@
 
 #include "repository/network_repo.h"
 #include "repository/device_repo.h"
+#include "ipam/IpAllocator.h"
 #include "model/network.h"
 #include "model/device.h"
 #include <string>
@@ -10,7 +11,7 @@
 
 class NetworkService {
 public:
-    NetworkService(NetworkRepo& network_repo, DeviceRepo& device_repo);
+    NetworkService(NetworkRepo& network_repo, DeviceRepo& device_repo, IpAllocator& ipam);
 
     // Returns (error, network_id) — network_id 0 on error
     std::pair<std::string, int64_t> create_network(const std::string& name, int64_t owner_id);
@@ -26,4 +27,5 @@ public:
 private:
     NetworkRepo& network_repo_;
     DeviceRepo& device_repo_;
+    IpAllocator& ipam_;
 };
