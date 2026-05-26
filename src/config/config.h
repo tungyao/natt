@@ -1,0 +1,40 @@
+#pragma once
+
+#include <string>
+#include <yaml-cpp/yaml.h>
+
+struct ServerConfig {
+    std::string host = "0.0.0.0";
+    int port = 8080;
+    int workers = 4;
+};
+
+struct DatabaseConfig {
+    std::string path = "data/natmesh.db";
+};
+
+struct JwtConfig {
+    std::string secret = "change-me";
+    int expiration_hours = 72;
+};
+
+struct WebSocketConfig {
+    int heartbeat_interval_sec = 15;
+    int heartbeat_timeout_sec = 45;
+};
+
+struct LogConfig {
+    std::string level = "info";
+    std::string pattern = "[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] [%s:%#] %v";
+};
+
+struct Config {
+    ServerConfig server;
+    DatabaseConfig database;
+    JwtConfig jwt;
+    WebSocketConfig websocket;
+    LogConfig logging;
+
+    static Config load(const std::string& path);
+    static Config load_default();
+};

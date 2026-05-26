@@ -1,0 +1,9 @@
+build/
+build-debug/
+*.db
+data/
+test_b64
+test_b64.cpp
+.DS_Store
+*.swp
+*.swo

@@ -1,0 +1,20 @@
+# NATMesh Server Configuration
+server:
+  host: "0.0.0.0"
+  port: 8080
+  workers: 4
+
+database:
+  path: "data/natmesh.db"
+
+jwt:
+  secret: "change-this-to-a-secure-random-secret-in-production"
+  expiration_hours: 72
+
+websocket:
+  heartbeat_interval_sec: 15
+  heartbeat_timeout_sec: 45
+
+logging:
+  level: "info"  # trace, debug, info, warn, error, critical
+  pattern: "[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] [%s:%#] %v"
