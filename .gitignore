@@ -1,5 +1,6 @@
 build/
 build-debug/
+build-windows/
 *.db
 data/
 test_b64

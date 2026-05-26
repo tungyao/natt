@@ -1,7 +1,11 @@
 #include "ipam/IpAllocator.h"
 #include <spdlog/spdlog.h>
 #include <sstream>
+#ifdef _WIN32
+#include <ws2tcpip.h>
+#else
 #include <arpa/inet.h>
+#endif
 
 // ── Static helpers ──────────────────────────────────────────
 

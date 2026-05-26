@@ -98,7 +98,7 @@ public:
         // For Wintun, use WintunReceivePacket() in a loop
         // and post to io_context via net::post
         if (handler) {
-            boost::system::error_code ec = boost::asio::error::not_supported;
+            boost::system::error_code ec = boost::system::errc::make_error_code(boost::system::errc::not_supported);
             handler(ec, 0);
         }
     }
@@ -106,7 +106,7 @@ public:
     void asyncWrite(net::const_buffer buf, WriteHandler handler) override {
         // For Wintun, use WintunAllocateSendPacket() + WintunSendPacket()
         if (handler) {
-            boost::system::error_code ec = boost::asio::error::not_supported;
+            boost::system::error_code ec = boost::system::errc::make_error_code(boost::system::errc::not_supported);
             handler(ec, 0);
         }
     }

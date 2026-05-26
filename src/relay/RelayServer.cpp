@@ -21,7 +21,7 @@ void RelayServer::start() {
 
 void RelayServer::stop() {
     boost::system::error_code ec;
-    cleanup_timer_.cancel(ec);
+    cleanup_timer_.cancel();
     socket_.close(ec);
     spdlog::info("RelayServer: stopped");
 }

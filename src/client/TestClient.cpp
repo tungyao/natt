@@ -14,8 +14,7 @@ TestClient::~TestClient() {
     if (ws_) ws_->close();
     // Cancel relay test timer
     if (relay_test_timer_) {
-        boost::system::error_code ec;
-        relay_test_timer_->cancel(ec);
+        relay_test_timer_->cancel();
     }
     // Stop puncher
     if (puncher_) puncher_->stop();

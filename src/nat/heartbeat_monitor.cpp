@@ -20,8 +20,7 @@ void HeartbeatMonitor::start() {
 
 void HeartbeatMonitor::stop() {
     running_ = false;
-    boost::system::error_code ec;
-    timer_.cancel(ec);
+    timer_.cancel();
     spdlog::info("HeartbeatMonitor: stopped");
 }
 

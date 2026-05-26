@@ -81,6 +81,10 @@ set(COMMON_LIBS
     spdlog::spdlog
 )
 
+if(WIN32)
+    list(APPEND COMMON_LIBS ws2_32 iphlpapi mswsock)
+endif()
+
 # ── natmesh-server (with DB, yaml-cpp) ──────────────────────
 set(SERVER_SOURCES ${LIB_SOURCES})  # copy
 list(REMOVE_ITEM SERVER_SOURCES
@@ -121,8 +125,13 @@ set(CLIENT_SOURCES
     src/client/UdpPuncher.cpp
     src/client/TestClient.cpp
     src/stun/StunServer.cpp
-    src/tun/TunLinux.cpp
 )
+
+if(WIN32)
+    list(APPEND CLIENT_SOURCES src/tun/TunWindows.cpp)
+else()
+    list(APPEND CLIENT_SOURCES src/tun/TunLinux.cpp)
+endif()
 
 # Need StunServer.h for STUN query (included from TestClient)
 add_executable(test_client ${CLIENT_SOURCES}

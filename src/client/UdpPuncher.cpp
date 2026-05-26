@@ -30,9 +30,9 @@ void UdpPuncher::start() {
 void UdpPuncher::stop() {
     punching_ = false;
     boost::system::error_code ec;
-    punch_timer_.cancel(ec);
-    timeout_timer_.cancel(ec);
-    relay_hb_timer_.cancel(ec);
+    punch_timer_.cancel();
+    timeout_timer_.cancel();
+    relay_hb_timer_.cancel();
     socket_.close(ec);
 }
 
@@ -338,6 +338,5 @@ void UdpPuncher::startRelayHeartbeat(const std::string& node_id,
 }
 
 void UdpPuncher::stopRelayHeartbeat() {
-    boost::system::error_code ec;
-    relay_hb_timer_.cancel(ec);
+    relay_hb_timer_.cancel();
 }
