@@ -31,6 +31,8 @@ set(LIB_SOURCES
     src/client/WsClient.cpp
     src/client/UdpPuncher.cpp
     src/client/TestClient.cpp
+    src/relay/RelayRegistry.cpp
+    src/relay/RelayServer.cpp
 )
 
 set(LIB_HEADERS
@@ -58,6 +60,8 @@ set(LIB_HEADERS
     src/client/WsClient.h
     src/client/UdpPuncher.h
     src/client/TestClient.h
+    src/relay/RelayRegistry.h
+    src/relay/RelayServer.h
 )
 
 # ── Common include + link ────────────────────────────────────
@@ -80,6 +84,8 @@ list(REMOVE_ITEM SERVER_SOURCES
     src/client/UdpPuncher.cpp
     src/client/TestClient.cpp
     src/stun/StunServer.cpp
+    src/relay/RelayRegistry.cpp
+    src/relay/RelayServer.cpp
 )
 list(APPEND SERVER_SOURCES cmd/server/main.cpp)
 
@@ -118,3 +124,18 @@ add_executable(test_client ${CLIENT_SOURCES}
 target_include_directories(test_client PRIVATE ${COMMON_INCLUDES})
 target_link_libraries(test_client PRIVATE ${COMMON_LIBS})
 target_compile_options(test_client PRIVATE -Wall -Wextra -Wpedantic -Wno-unused-parameter)
+
+# ── relay_server ─────────────────────────────────────────────
+set(RELAY_SOURCES
+    cmd/relay_server/main.cpp
+    src/relay/RelayRegistry.cpp
+    src/relay/RelayServer.cpp
+)
+
+add_executable(relay_server ${RELAY_SOURCES}
+    src/relay/RelayRegistry.h
+    src/relay/RelayServer.h
+)
+target_include_directories(relay_server PRIVATE ${COMMON_INCLUDES})
+target_link_libraries(relay_server PRIVATE ${COMMON_LIBS})
+target_compile_options(relay_server PRIVATE -Wall -Wextra -Wpedantic -Wno-unused-parameter)

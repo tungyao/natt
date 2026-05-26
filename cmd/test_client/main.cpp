@@ -37,6 +37,8 @@ int main(int argc, char* argv[]) {
             opts.connect_node_id = argv[++i];
         } else if (arg == "--local-addr" && i + 1 < argc) {
             opts.local_addr = argv[++i];
+        } else if (arg == "--relay" && i + 1 < argc) {
+            opts.relay_addr = argv[++i];
         } else if (arg == "--help") {
             std::cout << "Usage: test_client \\\n"
                       << "  --node-id node-a \\\n"
@@ -45,7 +47,8 @@ int main(int argc, char* argv[]) {
                       << "  --stun 127.0.0.1:3478 \\\n"
                       << "  --udp-port 40001 \\\n"
                       << "  --connect node-b \\\n"
-                      << "  --local-addr 192.168.1.10:40001\n";
+                      << "  --local-addr 192.168.1.10:40001 \\\n"
+                      << "  --relay 127.0.0.1:7000\n";
             return 0;
         }
     }
@@ -76,11 +79,16 @@ int main(int argc, char* argv[]) {
     try {
         g_client = std::make_shared<TestClient>();
 
-        if (g_client->run(opts)) {
-            spdlog::info("✓ P2P Hole Punch completed successfully!");
+        auto result = g_client->run(opts);
+        if (result) {
+            if (g_client->punchSuccess()) {
+                spdlog::info("✓ P2P Hole Punch completed successfully!");
+            } else {
+                spdlog::info("✓ Relay fallback completed successfully!");
+            }
             return 0;
         } else {
-            spdlog::warn("✗ P2P Hole Punch did not succeed");
+            spdlog::warn("✗ NAT traversal did not succeed");
             return 1;
         }
 

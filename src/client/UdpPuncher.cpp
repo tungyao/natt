@@ -14,6 +14,7 @@ UdpPuncher::UdpPuncher(net::io_context& ioc, uint16_t bind_port)
     , local_port_(socket_.local_endpoint().port())
     , punch_timer_(ioc)
     , timeout_timer_(ioc)
+    , relay_hb_timer_(ioc)
 {
     spdlog::info("UdpPuncher: bound to port {}", local_port_);
 }
@@ -31,6 +32,7 @@ void UdpPuncher::stop() {
     boost::system::error_code ec;
     punch_timer_.cancel(ec);
     timeout_timer_.cancel(ec);
+    relay_hb_timer_.cancel(ec);
     socket_.close(ec);
 }
 
@@ -184,6 +186,33 @@ void UdpPuncher::handle_receive(boost::system::error_code ec, std::size_t bytes_
                     punch_cb_(r);
                 }
             }
+
+        } else if (type == "relay_packet") {
+            // Relay packet forwarded by the relay server
+            auto from_id = json.value("from_node_id", std::string());
+            auto payload = json.value("payload", std::string());
+            auto seq = json.value("seq", int64_t(0));
+
+            if (relay_packet_cb_) {
+                relay_packet_cb_(from_id, payload, seq);
+            }
+
+        } else if (type == "relay_register_ok") {
+            // Registration acknowledged by relay server
+            if (relay_event_cb_) {
+                nlohmann::json d;
+                d["node_id"] = json.value("node_id", std::string());
+                relay_event_cb_("relay_register_ok", d);
+            }
+
+        } else if (type == "error") {
+            auto message = json.value("message", std::string());
+            spdlog::warn("UdpPuncher: error from relay: {}", message);
+            if (relay_event_cb_) {
+                nlohmann::json d;
+                d["message"] = message;
+                relay_event_cb_("relay_error", d);
+            }
         }
     } catch (const std::exception& e) {
         spdlog::warn("UdpPuncher: invalid packet: {}", e.what());
@@ -221,4 +250,94 @@ void UdpPuncher::do_send_to(const std::string& payload, const udp::endpoint& tar
                 spdlog::error("UdpPuncher: async send error: {}", ec.message());
             }
         });
+}
+
+// ── Relay Mode ──────────────────────────────────────────────
+
+void UdpPuncher::sendRelayRegister(const std::string& node_id,
+                                   const std::string& network_id,
+                                   const std::string& token,
+                                   const udp::endpoint& relay_ep) {
+    nlohmann::json msg = {
+        {"type", "relay_register"},
+        {"node_id", node_id},
+        {"network_id", network_id},
+        {"token", token}
+    };
+    auto payload = msg.dump();
+
+    boost::system::error_code ec;
+    socket_.send_to(net::buffer(payload), relay_ep, 0, ec);
+    if (ec) {
+        spdlog::error("UdpPuncher: send relay_register error: {}", ec.message());
+    } else {
+        spdlog::info("UdpPuncher: -> relay_register node_id={} network_id={}",
+                     node_id, network_id);
+    }
+}
+
+void UdpPuncher::sendRelayHeartbeat(const std::string& node_id,
+                                    const udp::endpoint& relay_ep) {
+    nlohmann::json msg = {
+        {"type", "relay_heartbeat"},
+        {"node_id", node_id}
+    };
+    auto payload = msg.dump();
+
+    boost::system::error_code ec;
+    socket_.send_to(net::buffer(payload), relay_ep, 0, ec);
+    if (ec) {
+        spdlog::error("UdpPuncher: send relay_heartbeat error: {}", ec.message());
+    } else {
+        spdlog::debug("UdpPuncher: -> relay_heartbeat node_id={}", node_id);
+    }
+}
+
+void UdpPuncher::sendRelayPacket(const std::string& from_node_id,
+                                 const std::string& to_node_id,
+                                 int64_t seq,
+                                 const std::string& payload_data,
+                                 const udp::endpoint& relay_ep) {
+    nlohmann::json msg = {
+        {"type", "relay_packet"},
+        {"from_node_id", from_node_id},
+        {"to_node_id", to_node_id},
+        {"seq", seq},
+        {"payload", payload_data}
+    };
+    auto payload = msg.dump();
+
+    boost::system::error_code ec;
+    socket_.send_to(net::buffer(payload), relay_ep, 0, ec);
+    if (ec) {
+        spdlog::error("UdpPuncher: send relay_packet error: {}", ec.message());
+    } else {
+        spdlog::info("UdpPuncher: -> relay_packet seq={} from={} to={}",
+                     seq, from_node_id, to_node_id);
+    }
+}
+
+void UdpPuncher::startRelayHeartbeat(const std::string& node_id,
+                                     const udp::endpoint& relay_ep,
+                                     int interval_sec) {
+    // Cancel any existing heartbeat timer
+    stopRelayHeartbeat();
+
+    auto self = shared_from_this();
+    relay_hb_timer_.expires_after(std::chrono::seconds(interval_sec));
+    relay_hb_timer_.async_wait([self, node_id, relay_ep, interval_sec](boost::system::error_code ec) {
+        if (ec) {
+            spdlog::debug("UdpPuncher: relay heartbeat timer cancelled: {}", ec.message());
+            return;
+        }
+        self->sendRelayHeartbeat(node_id, relay_ep);
+        self->startRelayHeartbeat(node_id, relay_ep, interval_sec);
+    });
+
+    spdlog::info("UdpPuncher: relay heartbeat started (interval={}s)", interval_sec);
+}
+
+void UdpPuncher::stopRelayHeartbeat() {
+    boost::system::error_code ec;
+    relay_hb_timer_.cancel(ec);
 }

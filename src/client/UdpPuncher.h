@@ -1,6 +1,7 @@
 #pragma once
 
 #include <boost/asio.hpp>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
 #include <memory>
@@ -72,6 +73,42 @@ public:
     // Check if P2P was successful
     bool isSuccess() const { return success_; }
 
+    // ── Relay mode ───────────────────────────────────────────
+    using RelayPacketCallback = std::function<void(const std::string& from_node_id,
+                                                     const std::string& payload,
+                                                     int64_t seq)>;
+    using RelayEventCallback = std::function<void(const std::string& event,
+                                                    const nlohmann::json& data)>;
+
+    // Send relay_register to the relay server
+    void sendRelayRegister(const std::string& node_id,
+                           const std::string& network_id,
+                           const std::string& token,
+                           const udp::endpoint& relay_ep);
+
+    // Send relay_heartbeat to the relay server
+    void sendRelayHeartbeat(const std::string& node_id,
+                            const udp::endpoint& relay_ep);
+
+    // Send a relay_packet (A -> B) through the relay server
+    void sendRelayPacket(const std::string& from_node_id,
+                         const std::string& to_node_id,
+                         int64_t seq,
+                         const std::string& payload,
+                         const udp::endpoint& relay_ep);
+
+    // Start periodic heartbeat timer for relay mode
+    void startRelayHeartbeat(const std::string& node_id,
+                             const udp::endpoint& relay_ep,
+                             int interval_sec = 10);
+
+    // Stop relay heartbeat timer
+    void stopRelayHeartbeat();
+
+    // Register callbacks for relay events
+    void setRelayPacketCallback(RelayPacketCallback cb) { relay_packet_cb_ = std::move(cb); }
+    void setRelayEventCallback(RelayEventCallback cb) { relay_event_cb_ = std::move(cb); }
+
 private:
     void do_receive();
     void handle_receive(boost::system::error_code ec, std::size_t len);
@@ -99,6 +136,11 @@ private:
 
     PunchCallback punch_cb_;
     PacketCallback packet_cb_;
+
+    // Relay mode members
+    RelayPacketCallback relay_packet_cb_;
+    RelayEventCallback relay_event_cb_;
+    net::steady_timer relay_hb_timer_;
 
     static constexpr std::size_t MAX_BUF = 4096;
     std::array<char, MAX_BUF> recv_buffer_;

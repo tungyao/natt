@@ -1,6 +1,19 @@
 # NATMesh — NAT 穿透组网系统
 
-轻量级 NAT 穿透组网系统。控制服务器负责设备管理、虚拟网络组织和信令交换，**不参与 VPN 数据转发**，**不做 TURN/Relay**。
+轻量级 NAT 穿透组网系统。控制服务器负责设备管理、虚拟网络组织和信令交换，**不参与 VPN 数据转发**。
+
+```
+设备 A ──WebSocket──→ NATMesh Server ←──WebSocket── 设备 B
+    │                      │                      │
+    │   ← punch_start ──→  │  ← punch_start ──→   │
+    │                      │                      │
+    ├── STUN Server ───────┤                      │
+    │                      │                      │
+    ├── UDP Hole Punch (直连) ────────────────────┤
+    │                      │                      │
+    └── Relay Server (UDP 7000) ──────────────────┘
+        P2P 失败时自动 fallback 到中继转发
+```
 
 ```
 设备 A ──WebSocket──→ NATMesh Server ←──WebSocket── 设备 B
@@ -25,6 +38,7 @@
 - [NAT 协议（轻量认证）](#nat-协议轻量认证)
 - [STUN 协议](#stun-协议)
 - [UDP Hole Punch 协议](#udp-hole-punch-协议)
+- [Relay 中继协议](#relay-中继协议)
 - [打洞测试](#打洞测试)
 - [完整信令流程](#完整信令流程)
 - [REST API](#rest-api)
@@ -70,6 +84,8 @@
 | `MessageDispatcher` | 按 `type` 字段路由 WebSocket 消息到注册处理器 |
 | `HeartbeatMonitor` | 周期性心跳超时检查，自动下线超时节点 |
 | `StunServer` | UDP 端口 3478，返回客户端公网地址 |
+| `RelayServer` | UDP 端口 7000，P2P 失败时自动中继转发 |
+| `RelayRegistry` | 中继节点线程安全注册中心 |
 
 ### 核心设计决策
 
@@ -147,10 +163,13 @@
 │   ├── stun/
 │   │   ├── StunServer.h           # STUN 服务
 │   │   └── StunServer.cpp
+│   ├── relay/
+│   │   ├── RelayRegistry.h/.cpp   # 中继节点注册中心（线程安全）
+│   │   └── RelayServer.h/.cpp     # UDP 中继转发服务
 │   └── client/
 │       ├── WsClient.h/.cpp        # WebSocket 客户端
-│       ├── UdpPuncher.h/.cpp      # UDP 打洞引擎
-│       └── TestClient.h/.cpp      # 打洞测试编排
+│       ├── UdpPuncher.h/.cpp      # UDP 打洞引擎（含 Relay 模式）
+│       └── TestClient.h/.cpp      # 打洞测试编排（含 Relay fallback）
 ```
 
 ---
@@ -193,7 +212,8 @@ ls -la build/natmesh-server build/stun_server build/test_client
 |---|---|---|---|
 | `natmesh-server` | `cmd/server/main.cpp` | yaml-cpp, sqlite3 | 控制服务器（REST + WS）|
 | `stun_server` | `cmd/stun_server/main.cpp` | 无 | STUN UDP 服务 |
-| `test_client` | `cmd/test_client/main.cpp` | 无 | 打洞测试客户端 |
+| `test_client` | `cmd/test_client/main.cpp` | 无 | 打洞测试客户端（含 Relay fallback）|
+| `relay_server` | `cmd/relay_server/main.cpp` | 无 | UDP 中继转发服务器 |
 
 ---
 
@@ -213,9 +233,16 @@ mkdir -p data
 ./build/stun_server --listen 0.0.0.0 --port 3478
 ```
 
-### 3. 启动两个测试客户端
+### 3. 启动 Relay 中继服务（可选，用于 P2P fallback）
 
-**终端 A — 节点 A（发起连接）：**
+```bash
+./build/relay_server --port 7000
+# 默认端口 7000，也可不加 --port 参数
+```
+
+### 4. 启动两个测试客户端
+
+**终端 A — 节点 A（发起连接，P2P 直连模式）：**
 
 ```bash
 ./build/test_client \
@@ -228,7 +255,7 @@ mkdir -p data
   --local-addr 127.0.0.1:40001
 ```
 
-**终端 B — 节点 B（等待连接）：**
+**终端 B — 节点 B（等待连接，P2P 直连模式）：**
 
 ```bash
 ./build/test_client \
@@ -240,7 +267,32 @@ mkdir -p data
   --local-addr 127.0.0.1:40002
 ```
 
+**带 Relay fallback（P2P 失败时自动切换）：**
+
+```bash
+# 终端 A
+./build/test_client \
+  --node-id node-a \
+  --network-id home \
+  --control ws://127.0.0.1:8080/ws \
+  --stun 127.0.0.1:3478 \
+  --relay 127.0.0.1:7000 \
+  --udp-port 40001 \
+  --connect node-b
+
+# 终端 B
+./build/test_client \
+  --node-id node-b \
+  --network-id home \
+  --control ws://127.0.0.1:8080/ws \
+  --stun 127.0.0.1:3478 \
+  --relay 127.0.0.1:7000 \
+  --udp-port 40002
+```
+
 ### 预期输出
+
+**P2P 直连成功（无 `--relay`）：**
 
 ```
 ═══════════════════════════════════════════
@@ -249,6 +301,22 @@ mkdir -p data
   RTT: 0ms
 ═══════════════════════════════════════════
 ✓ P2P Hole Punch SUCCESS with node-b at 127.0.0.1:40002 (RTT=0ms)
+```
+
+**Relay fallback（P2P 失败，带 `--relay`）：**
+
+```
+✗ P2P Hole Punch FAILED for node-b
+→ Falling back to relay mode: 127.0.0.1:7000
+UdpPuncher: -> relay_register node_id=node-a network_id=home
+✓ Relay registration OK: node_id=node-a
+Relay test: sending seq=1 to node-b via relay
+═══════════════════════════════════════════
+  RELAY_MESSAGE_RECEIVED
+  from_node_id: node-b
+  seq:          1
+  payload:      hello-from-node-b-seq=1
+═══════════════════════════════════════════
 ```
 
 ---
@@ -386,6 +454,115 @@ UDP 直连，JSON over UDP。
 
 ---
 
+---
+
+## Relay 中继协议
+
+当 UDP Hole Punch 失败时（5 秒超时未收到 `punch_ack`），客户端自动切换至 Relay 模式。
+中继服务器只转发加密 payload，不解密业务数据。
+
+### 消息格式
+
+所有消息为 JSON over UDP，端口 **7000**（可配置）。
+
+### 注册
+
+```
+C→Relay: {
+  "type": "relay_register",
+  "node_id": "node-a",
+  "network_id": "home",
+  "token": "test-token"
+}
+
+Relay→C: {
+  "type": "relay_register_ok",
+  "node_id": "node-a"
+}
+```
+
+### 中继转发
+
+```
+C→Relay: {
+  "type": "relay_packet",
+  "from_node_id": "node-a",
+  "to_node_id": "node-b",
+  "seq": 1,
+  "payload": "base64-encrypted-or-raw-test-data"
+}
+
+Relay→C (转发给 node-b): {
+  "type": "relay_packet",
+  "from_node_id": "node-a",
+  "to_node_id": "node-b",
+  "seq": 1,
+  "payload": "base64-encrypted-or-raw-test-data"
+}
+```
+
+### 心跳
+
+```
+C→Relay: {
+  "type": "relay_heartbeat",
+  "node_id": "node-a"
+}
+```
+
+心跳间隔 **10s**，中继服务器 **30s** 未收到心跳则自动移除节点。
+
+### 错误
+
+```
+Relay→C: {
+  "type": "error",
+  "message": "target_offline"
+}
+```
+
+错误类型：`target_offline`、`network_mismatch`、`missing_token`、`not_registered`
+
+### Relay 校验逻辑
+
+1. `from_node_id` 必须在注册列表中
+2. `to_node_id` 必须在线
+3. `from` 和 `to` 必须属于同一个 `network_id`
+4. 全部通过后，JSON 原样转发给目标 endpoint
+
+### 完整 Relay 信令流程
+
+```
+node-a                     relay_server:7000                  node-b
+  │                              │                              │
+  │── relay_register(node-a) ───→│                              │
+  │←─ relay_register_ok ─────────│                              │
+  │                              │── relay_register(node-b) ───→│
+  │                              │←─ relay_register_ok ─────────│
+  │                              │                              │
+  │── relay_heartbeat(node-a) ──→│                              │
+  │                              │── relay_heartbeat(node-b) ──→│
+  │                              │                              │
+  │── relay_packet(from=a,to=b, seq=1, payload="hello") ──────→│
+  │                              │                              │
+  │                              │── relay_packet(from=b,to=a,  │
+  │←────────────────────────────────── seq=1, payload="world")  │
+  │                              │                              │
+```
+
+### Relay 输出示例
+
+```
+═══════════════════════════════════════════
+  RELAY_MESSAGE_RECEIVED
+  from_node_id: node-b
+  seq:          1
+  payload:      hello-from-node-b-seq=1
+═══════════════════════════════════════════
+```
+
+---
+
 ## 打洞测试
 
 ### 命令行参数
@@ -401,6 +578,13 @@ UDP 直连，JSON over UDP。
 | `--udp-port` | 本地 UDP 绑定端口 | 自动分配 |
 | `--connect` | 要连接的目标节点 ID | 空（等待） |
 | `--local-addr` | 本地地址（逗号分隔） | 自动生成 |
+| `--relay` | Relay 中继服务器地址 | 空（不启用） |
+
+**relay_server：**
+
+| 参数 | 说明 | 默认值 |
+|---|---|---|
+| `--port` | UDP 监听端口 | `7000` |
 
 **stun_server：**
 

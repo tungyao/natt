@@ -16,6 +16,13 @@ struct StunResult {
     bool success = false;
 };
 
+enum class ClientMode {
+    PUNCHING,
+    P2P,
+    RELAY,
+    FAILED
+};
+
 class TestClient : public std::enable_shared_from_this<TestClient> {
 public:
     struct Options {
@@ -27,6 +34,7 @@ public:
         uint16_t udp_port = 0;        // 0 = auto bind
         std::string connect_node_id;  // empty = wait for incoming
         std::string local_addr;       // for local_addrs, separate by comma
+        std::string relay_addr;       // e.g. "127.0.0.1:7000", empty = no relay fallback
     };
 
     explicit TestClient();
@@ -48,6 +56,16 @@ private:
     // Handle punch result from UdpPuncher
     void on_punch_result(const PunchResult& result);
 
+    // ── Relay mode ──
+    void enter_relay_mode();
+    void on_relay_packet(const std::string& from_node_id,
+                         const std::string& payload,
+                         int64_t seq);
+    void on_relay_event(const std::string& event,
+                        const nlohmann::json& data);
+    void send_relay_test_message();
+    void schedule_relay_test_message();
+
     std::shared_ptr<WsClient> ws_;
     std::shared_ptr<UdpPuncher> puncher_;
 
@@ -60,4 +78,14 @@ private:
     // IoContext for UdpPuncher
     net::io_context puncher_ioc_;
     std::thread puncher_thread_;
+
+    // Relay mode state
+    ClientMode mode_{ClientMode::PUNCHING};
+    std::string peer_node_id_;
+    std::string relay_host_;
+    uint16_t relay_port_ = 7000;
+    udp::endpoint relay_ep_;
+    int64_t relay_seq_ = 0;
+    bool relay_registered_{false};
+    std::unique_ptr<net::steady_timer> relay_test_timer_;
 };
