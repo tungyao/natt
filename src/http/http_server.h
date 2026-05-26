@@ -14,6 +14,10 @@
 #include "service/device_service.h"
 #include "service/network_service.h"
 #include "service/peer_manager.h"
+#include "nat/session_manager.h"
+#include "nat/node_registry.h"
+#include "nat/message_dispatcher.h"
+#include "nat/heartbeat_monitor.h"
 
 namespace beast = boost::beast;
 namespace http = beast::http;
@@ -64,7 +68,7 @@ private:
     std::optional<auth::JwtPayload> authenticate(const http::request<http::string_body>& req);
 
     // WebSocket handler
-    void handle_websocket_upgrade(tcp::socket&& socket, const http::request<http::string_body>& req);
+    void handle_websocket_upgrade(tcp::socket&& socket, http::request<http::string_body> req);
 
     net::io_context& ioc_;
     tcp::acceptor acceptor_;
@@ -75,4 +79,10 @@ private:
     NetworkService& network_svc_;
     auth::JwtManager& jwt_;
     PeerManager& peer_mgr_;
+
+    // ── New NAT modules ──
+    SessionManager session_mgr_;
+    NodeRegistry node_registry_;
+    MessageDispatcher msg_dispatcher_;
+    std::shared_ptr<HeartbeatMonitor> heartbeat_monitor_;
 };

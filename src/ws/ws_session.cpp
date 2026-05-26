@@ -4,7 +4,9 @@
 
 namespace beast_ws {
 
+// ── JWT-auth constructor (legacy) ────────────────────────────
 WsSession::WsSession(tcp::socket&& socket,
+                     http::request<http::string_body> request,
                      AuthCallback auth_cb,
                      PostAuthCallback post_auth_cb,
                      MessageHandler msg_handler,
@@ -13,12 +15,36 @@ WsSession::WsSession(tcp::socket&& socket,
     : ws_(std::move(socket))
     , heartbeat_timer_(ws_.get_executor())
     , strand_(net::make_strand(ws_.get_executor()))
+    , http_request_(std::move(request))
     , auth_cb_(std::move(auth_cb))
     , post_auth_cb_(std::move(post_auth_cb))
     , msg_handler_(std::move(msg_handler))
     , disconnect_handler_(std::move(disconnect_handler))
     , heartbeat_timeout_sec_(heartbeat_timeout_sec)
     , last_heartbeat_(std::chrono::steady_clock::now())
+    , use_node_auth_(false)
+{
+}
+
+// ── Node-auth constructor (new protocol) ─────────────────────
+WsSession::WsSession(tcp::socket&& socket,
+                     http::request<http::string_body> request,
+                     NodeAuthCallback node_auth_cb,
+                     PostNodeAuthCallback post_node_auth_cb,
+                     MessageHandler msg_handler,
+                     DisconnectHandler disconnect_handler,
+                     int heartbeat_timeout_sec)
+    : ws_(std::move(socket))
+    , heartbeat_timer_(ws_.get_executor())
+    , strand_(net::make_strand(ws_.get_executor()))
+    , http_request_(std::move(request))
+    , node_auth_cb_(std::move(node_auth_cb))
+    , post_node_auth_cb_(std::move(post_node_auth_cb))
+    , msg_handler_(std::move(msg_handler))
+    , disconnect_handler_(std::move(disconnect_handler))
+    , heartbeat_timeout_sec_(heartbeat_timeout_sec)
+    , last_heartbeat_(std::chrono::steady_clock::now())
+    , use_node_auth_(true)
 {
 }
 
@@ -29,20 +55,20 @@ WsSession::~WsSession() {
 }
 
 void WsSession::start() {
-    // Accept the WebSocket handshake
+    // Accept the WebSocket handshake using the parsed HTTP request
     ws_.set_option(websocket::stream_base::timeout::suggested(beast::role_type::server));
     ws_.set_option(websocket::stream_base::decorator(
         [](websocket::response_type& res) {
             res.set(beast::http::field::server, "NATMesh-Server/0.1");
         }));
 
-    ws_.async_accept(
+    ws_.async_accept(http_request_,
         [self = shared_from_this()](beast::error_code ec) {
-            if (!ec) {
-                self->do_read();
-            } else {
+            if (ec) {
                 spdlog::error("WS accept error: {}", ec.message());
+                return;
             }
+            self->do_read();
         });
 
     // Start heartbeat checker
@@ -152,44 +178,25 @@ void WsSession::check_heartbeat() {
 void WsSession::handle_message(const std::string& data) {
     try {
         auto json = nlohmann::json::parse(data);
-        auto type = json["type"].get<std::string>();
-
-        if (!authenticated_) {
-            if (type == "auth") {
-                auto token = json["token"].get<std::string>();
-                auto payload = auth_cb_(token);
-                if (payload.has_value()) {
-                    authenticated_ = true;
-                    last_heartbeat_ = std::chrono::steady_clock::now();
-
-                    // Notify post-auth callback (for session registration)
-                    if (post_auth_cb_) {
-                        post_auth_cb_(shared_from_this(), payload->user_id, payload->username);
-                    }
-
-                    nlohmann::json response = {
-                        {"type", "auth_ok"},
-                        {"user_id", payload->user_id},
-                        {"username", payload->username}
-                    };
-                    send_json(response.dump());
-                } else {
-                    nlohmann::json response = {
-                        {"type", "error"},
-                        {"message", "Invalid token"}
-                    };
-                    send_json(response.dump());
-                }
-            } else {
-                nlohmann::json response = {
-                    {"type", "error"},
-                    {"message", "Authentication required"}
-                };
-                send_json(response.dump());
-            }
+        auto type_it = json.find("type");
+        if (type_it == json.end()) {
+            nlohmann::json response = {
+                {"type", "error"},
+                {"message", "Missing 'type' field"}
+            };
+            send_json(response.dump());
             return;
         }
 
+        auto type = type_it->get<std::string>();
+
+        // ── Handle auth before anything else ──
+        if (!authenticated_) {
+            handle_auth_message(json);
+            return;
+        }
+
+        // ── Handle heartbeat ──
         if (type == "heartbeat") {
             last_heartbeat_ = std::chrono::steady_clock::now();
             nlohmann::json response = {{"type", "pong"}};
@@ -197,7 +204,7 @@ void WsSession::handle_message(const std::string& data) {
             return;
         }
 
-        // Delegate to message handler
+        // ── Delegate to message handler ──
         if (msg_handler_) {
             msg_handler_(shared_from_this(), node_id_, json);
         }
@@ -209,6 +216,82 @@ void WsSession::handle_message(const std::string& data) {
             {"message", "Invalid message format"}
         };
         send_json(response.dump());
+    }
+}
+
+void WsSession::handle_auth_message(const nlohmann::json& json) {
+    auto type = json["type"].get<std::string>();
+
+    if (type == "auth") {
+        if (use_node_auth_) {
+            // ── New protocol: node_id + network_id + public_key ──
+            auto node_id = json.value("node_id", std::string());
+            auto network_id = json.value("network_id", std::string());
+            auto public_key = json.value("public_key", std::string());
+
+            if (node_id.empty()) {
+                nlohmann::json resp = {{"type", "error"}, {"message", "node_id is required"}};
+                send_json(resp.dump());
+                return;
+            }
+
+            if (!node_auth_cb_) {
+                nlohmann::json resp = {{"type", "error"}, {"message", "Server does not support node auth"}};
+                send_json(resp.dump());
+                return;
+            }
+
+            auto result = node_auth_cb_(node_id, network_id, public_key);
+            if (result.success) {
+                authenticated_ = true;
+                node_id_ = result.node_id;
+                network_id_ = result.network_id;
+                public_key_ = result.public_key;
+                last_heartbeat_ = std::chrono::steady_clock::now();
+
+                nlohmann::json resp = {
+                    {"type", "auth_ok"},
+                    {"node_id", node_id_},
+                    {"network_id", network_id_}
+                };
+                send_json(resp.dump());
+                spdlog::info("WebSocket node-auth: node_id={}, network_id={}",
+                             node_id_, network_id_);
+
+                // Fire post-auth callback (for session registration, peer list, etc.)
+                if (post_node_auth_cb_) {
+                    post_node_auth_cb_(shared_from_this());
+                }
+            } else {
+                nlohmann::json resp = {{"type", "error"}, {"message", result.error_msg}};
+                send_json(resp.dump());
+            }
+        } else {
+            // ── Legacy: JWT token auth ──
+            auto token = json["token"].get<std::string>();
+            auto payload = auth_cb_(token);
+            if (payload.has_value()) {
+                authenticated_ = true;
+                last_heartbeat_ = std::chrono::steady_clock::now();
+
+                if (post_auth_cb_) {
+                    post_auth_cb_(shared_from_this(), payload->user_id, payload->username);
+                }
+
+                nlohmann::json resp = {
+                    {"type", "auth_ok"},
+                    {"user_id", payload->user_id},
+                    {"username", payload->username}
+                };
+                send_json(resp.dump());
+            } else {
+                nlohmann::json resp = {{"type", "error"}, {"message", "Invalid token"}};
+                send_json(resp.dump());
+            }
+        }
+    } else {
+        nlohmann::json resp = {{"type", "error"}, {"message", "Authentication required"}};
+        send_json(resp.dump());
     }
 }
 

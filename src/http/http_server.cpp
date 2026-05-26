@@ -22,10 +22,145 @@ HttpServer::HttpServer(net::io_context& ioc,
     , peer_mgr_(peer_mgr)
 {
     spdlog::info("HTTP server listening on {}:{}", config.server.host, config.server.port);
+
+    // ── Initialize HeartbeatMonitor ──
+    heartbeat_monitor_ = std::make_shared<HeartbeatMonitor>(
+        ioc,
+        config.websocket.heartbeat_interval_sec,
+        config.websocket.heartbeat_timeout_sec
+    );
+
+    // Set up heartbeat timeout callback
+    heartbeat_monitor_->setTimeoutCallback(
+        [this](const std::string& node_id) {
+            spdlog::warn("Heartbeat timeout, removing node_id={}", node_id);
+            node_registry_.removeNode(node_id);
+            session_mgr_.removeSession(node_id);
+            device_svc_.set_offline(node_id);
+
+            // Notify network peers about the offline node
+            auto node = node_registry_.findNode(node_id);
+            if (node.has_value()) {
+                auto peers = node_registry_.listNetworkNodes(node->network_id);
+                nlohmann::json peer_list = {{"type", "peer_list"}, {"peers", nlohmann::json::array()}};
+                for (const auto& p : peers) {
+                    if (p.node_id != node_id) {
+                        peer_list["peers"].push_back(p.to_peer_json());
+                    }
+                }
+                session_mgr_.broadcastIf(peer_list, [&](const std::string& id) {
+                    return id != node_id && node_registry_.isOnline(id);
+                });
+            }
+        }
+    );
+
+    // Set up online check for heartbeat monitor
+    heartbeat_monitor_->setOnlineCheck(
+        [this]() -> std::vector<std::string> {
+            return node_registry_.findTimedOutNodes(config_.websocket.heartbeat_timeout_sec);
+        }
+    );
+
+    // ── Register MessageDispatchers ──
+
+    // update_addr: update node's public/local addresses
+    msg_dispatcher_.registerHandler("update_addr",
+        [this](WsSessionPtr session, const std::string& node_id, const nlohmann::json& msg) {
+            auto public_ip = msg.value("public_ip", std::string());
+            auto public_port = msg.value("public_port", 0);
+            std::vector<std::string> local_addrs;
+            if (msg.contains("local_addrs")) {
+                local_addrs = msg["local_addrs"].get<std::vector<std::string>>();
+            }
+
+            node_registry_.updateAddress(node_id, public_ip, public_port, local_addrs);
+            device_svc_.update_connection_info(node_id, public_ip, public_port, local_addrs);
+
+            spdlog::info("update_addr: node_id={}, ip={}:{}, {} local addrs",
+                         node_id, public_ip, public_port, local_addrs.size());
+        }
+    );
+
+    // heartbeat: update last seen
+    msg_dispatcher_.registerHandler("heartbeat",
+        [this](WsSessionPtr session, const std::string& node_id, const nlohmann::json& msg) {
+            node_registry_.updateHeartbeat(node_id);
+            device_svc_.update_heartbeat(node_id);
+            session->send_json(nlohmann::json{{"type", "pong"}}.dump());
+        }
+    );
+
+    // connect_peer: NAT hole punching signaling
+    msg_dispatcher_.registerHandler("connect_peer",
+        [this](WsSessionPtr session, const std::string& node_id, const nlohmann::json& msg) {
+            auto target_node_id = msg["target_node_id"].get<std::string>();
+
+            // Lookup target node info
+            auto target_node = node_registry_.findNode(target_node_id);
+            if (!target_node.has_value()) {
+                nlohmann::json err = {
+                    {"type", "error"},
+                    {"message", "Target device is not online"}
+                };
+                session->send_json(err.dump());
+                return;
+            }
+
+            // Lookup requester node info
+            auto requester_node = node_registry_.findNode(node_id);
+            if (!requester_node.has_value()) {
+                nlohmann::json err = {
+                    {"type", "error"},
+                    {"message", "Your device info not found"}
+                };
+                session->send_json(err.dump());
+                return;
+            }
+
+            // Send punch_start to requester (outgoing direction)
+            {
+                nlohmann::json punch_msg = {
+                    {"type", "punch_start"},
+                    {"direction", "outgoing"},
+                    {"peer_node_id", target_node->node_id},
+                    {"peer_public_ip", target_node->public_ip},
+                    {"peer_public_port", target_node->public_port},
+                    {"peer_local_addrs", nlohmann::json::array()},
+                    {"peer_public_key", target_node->public_key}
+                };
+                for (const auto& addr : target_node->local_addrs) {
+                    punch_msg["peer_local_addrs"].push_back(addr);
+                }
+                session->send_json(punch_msg.dump());
+            }
+
+            // Send punch_start to target (incoming direction)
+            auto target_session = session_mgr_.getSession(target_node_id);
+            if (target_session) {
+                nlohmann::json punch_msg = {
+                    {"type", "punch_start"},
+                    {"direction", "incoming"},
+                    {"peer_node_id", requester_node->node_id},
+                    {"peer_public_ip", requester_node->public_ip},
+                    {"peer_public_port", requester_node->public_port},
+                    {"peer_local_addrs", nlohmann::json::array()},
+                    {"peer_public_key", requester_node->public_key}
+                };
+                for (const auto& addr : requester_node->local_addrs) {
+                    punch_msg["peer_local_addrs"].push_back(addr);
+                }
+                target_session->send_json(punch_msg.dump());
+            }
+
+            spdlog::info("NAT signaling: connect_peer {} → {}", node_id, target_node_id);
+        }
+    );
 }
 
 void HttpServer::start() {
     do_accept();
+    heartbeat_monitor_->start();
 }
 
 void HttpServer::do_accept() {
@@ -60,7 +195,7 @@ void HttpServer::handle_connection(tcp::socket socket) {
 
     // Check for WebSocket upgrade
     if (beast::websocket::is_upgrade(req)) {
-        handle_websocket_upgrade(std::move(socket), req);
+        handle_websocket_upgrade(std::move(socket), std::move(req));
         return;
     }
 
@@ -158,6 +293,18 @@ http::response<http::string_body> HttpServer::handle_rest_request(
         // WS token
         if (path == "/api/v1/ws/token" && method == "GET") {
             return handle_ws_token(req, user_id);
+        }
+
+        // ── NAT status endpoints ──
+        if (path == "/api/v1/nat/peers" && method == "GET") {
+            nlohmann::json arr = nlohmann::json::array();
+            for (const auto& nid : session_mgr_.listSessions()) {
+                auto node = node_registry_.findNode(nid);
+                if (node.has_value()) {
+                    arr.push_back(node->to_peer_json());
+                }
+            }
+            return make_json_response(http::status::ok, arr);
         }
 
     } catch (const std::exception& e) {
@@ -342,76 +489,193 @@ http::response<http::string_body> HttpServer::handle_health(
 {
     return make_json_response(http::status::ok, {
         {"status", "ok"},
-        {"online_devices", peer_mgr_.online_count()}
+        {"online_devices", session_mgr_.onlineCount()}
     });
 }
 
 // ── WebSocket Upgrade ─────────────────────────────────────
 
 void HttpServer::handle_websocket_upgrade(tcp::socket&& socket,
-                                           const http::request<http::string_body>& req)
+                                           http::request<http::string_body> req)
 {
-    auto session = std::make_shared<beast_ws::WsSession>(
-        std::move(socket),
+    // Determine auth mode based on URL path
+    auto target = std::string(req.target());
+    bool use_node_auth = (target.find("/api/v1/ws/nat") != std::string::npos);
 
-        // Auth callback: verify JWT token
-        [this](const std::string& token) -> std::optional<auth::JwtPayload> {
-            return jwt_.verify_token(token);
-        },
+    if (use_node_auth) {
+        // ── New protocol: node_id-based auth (no JWT required) ──
+        auto session = std::make_shared<beast_ws::WsSession>(
+            std::move(socket),
+            std::move(req),
 
-        // Post-auth callback: log successful auth
-        [](beast_ws::WsSessionPtr session, int64_t user_id, const std::string& username) {
-            spdlog::info("WebSocket authenticated: user_id={}, username={}", user_id, username);
-        },
+            // Node auth callback — validates node identity
+            [this](const std::string& node_id,
+                   const std::string& network_id,
+                   const std::string& public_key) -> beast_ws::AuthResult {
+                // Register node in NodeRegistry
+                NodeInfo info;
+                info.node_id = node_id;
+                info.network_id = network_id;
+                info.public_key = public_key;
+                info.online = true;
+                info.last_seen = std::chrono::system_clock::now();
+                node_registry_.registerNode(info);
 
-        // Message handler: dispatch WS messages after auth
-        [this](beast_ws::WsSessionPtr session, const std::string& node_id, const nlohmann::json& msg) {
-            auto type = msg["type"].get<std::string>();
+                beast_ws::AuthResult result;
+                result.success = true;
+                result.node_id = node_id;
+                result.network_id = network_id;
+                result.public_key = public_key;
+                return result;
+            },
 
-            if (type == "device_update") {
-                auto& d = msg["device"];
-                std::vector<std::string> lan_ips;
-                if (d.contains("lan_ips")) {
-                    lan_ips = d["lan_ips"].get<std::vector<std::string>>();
+            // Post-node-auth callback — registers session + sends peer list
+            [this](beast_ws::WsSessionPtr session) {
+                auto nid = session->node_id();
+                auto net_id = session->network_id();
+
+                // Register session
+                session_mgr_.registerSession(nid, session);
+
+                // Send peer_list with all online nodes in same network
+                auto peers = node_registry_.listNetworkNodes(net_id);
+                nlohmann::json peer_list = {
+                    {"type", "peer_list"},
+                    {"peers", nlohmann::json::array()}
+                };
+                for (const auto& p : peers) {
+                    if (p.node_id != nid) {
+                        peer_list["peers"].push_back(p.to_peer_json());
+                    }
                 }
+                session->send_json(peer_list.dump());
 
-                device_svc_.update_connection_info(
-                    node_id,
-                    d.value("public_ip", std::string("")),
-                    d.value("public_port", 0),
-                    lan_ips
-                );
-
-                auto device = device_svc_.get_device(node_id);
-                if (device.has_value()) {
-                    session->set_device_info(*device);
+                // Also broadcast updated peer list to other nodes in the network
+                nlohmann::json broadcast_list = {
+                    {"type", "peer_list"},
+                    {"peers", nlohmann::json::array()}
+                };
+                for (const auto& p : peers) {
+                    broadcast_list["peers"].push_back(p.to_peer_json());
                 }
+                session_mgr_.broadcastIf(broadcast_list, [&](const std::string& id) {
+                    return id != nid && node_registry_.isOnline(id);
+                });
 
-                peer_mgr_.register_session(node_id, session);
+                spdlog::info("Node online: node_id={}, network_id={}, online={}",
+                             nid, net_id, session_mgr_.onlineCount());
+            },
 
-            } else if (type == "connect_peer") {
-                auto target = msg["target_node_id"].get<std::string>();
-                auto err = peer_mgr_.handle_connect_peer(node_id, target);
-                if (!err.empty()) {
-                    nlohmann::json response = {
-                        {"type", "error"},
-                        {"message", err}
-                    };
-                    session->send_json(response.dump());
+            // Message handler
+            [this](beast_ws::WsSessionPtr session, const std::string& node_id, const nlohmann::json& msg) {
+                // Dispatch to registered handlers
+                auto type = msg["type"].get<std::string>();
+
+                if (type == "update_addr") {
+                    msg_dispatcher_.dispatch(session, node_id, msg);
+                } else if (type == "heartbeat") {
+                    msg_dispatcher_.dispatch(session, node_id, msg);
+                } else if (type == "connect_peer") {
+                    msg_dispatcher_.dispatch(session, node_id, msg);
+                } else {
+                    spdlog::warn("Unknown message type '{}' from node_id={}", type, node_id);
                 }
-            }
-        },
+            },
 
-        // Disconnect handler
-        [this](const std::string& node_id) {
-            peer_mgr_.unregister_session(node_id);
-            device_svc_.set_offline(node_id);
-        },
+            // Disconnect handler
+            [this](const std::string& node_id) {
+                auto node = node_registry_.findNode(node_id);
+                if (node.has_value()) {
+                    auto network_id = node->network_id;
+                    node_registry_.removeNode(node_id);
+                    session_mgr_.removeSession(node_id);
+                    device_svc_.set_offline(node_id);
 
-        config_.websocket.heartbeat_timeout_sec
-    );
+                    // Broadcast updated peer list to network peers
+                    auto peers = node_registry_.listNetworkNodes(network_id);
+                    nlohmann::json peer_list = {{"type", "peer_list"}, {"peers", nlohmann::json::array()}};
+                    for (const auto& p : peers) {
+                        peer_list["peers"].push_back(p.to_peer_json());
+                    }
+                    session_mgr_.broadcastIf(peer_list, [&](const std::string& id) {
+                        return node_registry_.isOnline(id);
+                    });
+                } else {
+                    session_mgr_.removeSession(node_id);
+                    node_registry_.removeNode(node_id);
+                }
+            },
 
-    session->start();
+            config_.websocket.heartbeat_timeout_sec
+        );
+
+        session->start();
+
+    } else {
+        // ── Legacy: JWT-based auth ──
+        auto session = std::make_shared<beast_ws::WsSession>(
+            std::move(socket),
+            std::move(req),
+
+            // Auth callback: verify JWT token
+            [this](const std::string& token) -> std::optional<auth::JwtPayload> {
+                return jwt_.verify_token(token);
+            },
+
+            // Post-auth callback: log successful auth
+            [](beast_ws::WsSessionPtr session, int64_t user_id, const std::string& username) {
+                spdlog::info("WebSocket authenticated: user_id={}, username={}", user_id, username);
+            },
+
+            // Message handler: dispatch WS messages after auth
+            [this](beast_ws::WsSessionPtr session, const std::string& node_id, const nlohmann::json& msg) {
+                auto type = msg["type"].get<std::string>();
+
+                if (type == "device_update") {
+                    auto& d = msg["device"];
+                    std::vector<std::string> lan_ips;
+                    if (d.contains("lan_ips")) {
+                        lan_ips = d["lan_ips"].get<std::vector<std::string>>();
+                    }
+
+                    device_svc_.update_connection_info(
+                        node_id,
+                        d.value("public_ip", std::string("")),
+                        d.value("public_port", 0),
+                        lan_ips
+                    );
+
+                    auto device = device_svc_.get_device(node_id);
+                    if (device.has_value()) {
+                        session->set_device_info(*device);
+                    }
+
+                    peer_mgr_.register_session(node_id, session);
+
+                } else if (type == "connect_peer") {
+                    auto target = msg["target_node_id"].get<std::string>();
+                    auto err = peer_mgr_.handle_connect_peer(node_id, target);
+                    if (!err.empty()) {
+                        nlohmann::json response = {
+                            {"type", "error"},
+                            {"message", err}
+                        };
+                        session->send_json(response.dump());
+                    }
+                }
+            },
+
+            // Disconnect handler
+            [this](const std::string& node_id) {
+                peer_mgr_.unregister_session(node_id);
+                device_svc_.set_offline(node_id);
+            },
+
+            config_.websocket.heartbeat_timeout_sec
+        );
+
+        session->start();
+    }
 }
 
 // ── Auth helper ────────────────────────────────────────────

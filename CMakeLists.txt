@@ -24,6 +24,10 @@ set(SOURCES
     src/service/peer_manager.cpp
     src/http/http_server.cpp
     src/ws/ws_session.cpp
+    src/nat/session_manager.cpp
+    src/nat/node_registry.cpp
+    src/nat/message_dispatcher.cpp
+    src/nat/heartbeat_monitor.cpp
 )
 
 set(HEADERS
@@ -43,6 +47,10 @@ set(HEADERS
     src/service/peer_manager.h
     src/http/http_server.h
     src/ws/ws_session.h
+    src/nat/session_manager.h
+    src/nat/node_registry.h
+    src/nat/message_dispatcher.h
+    src/nat/heartbeat_monitor.h
 )
 
 # ── Executable ───────────────────────────────────────────────
