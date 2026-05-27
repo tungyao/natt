@@ -9,6 +9,7 @@
 #include <functional>
 #include <atomic>
 #include <thread>
+#include <mutex>
 
 namespace beast = boost::beast;
 namespace websocket = beast::websocket;
@@ -34,6 +35,9 @@ public:
     // Close connection
     void close();
 
+    // Wait for the background reader to exit after close()
+    void joinReader();
+
     // Register message callback (called from reader thread)
     void setMessageCallback(MessageCallback cb) { msg_cb_ = std::move(cb); }
 
@@ -46,14 +50,15 @@ public:
 private:
     void reader_thread_func();
 
+    // Must outlive ws_, because Beast stream destruction touches io_context services.
+    net::io_context ioc_;
     std::unique_ptr<websocket::stream<beast::tcp_stream>> ws_;
     std::atomic<bool> connected_{false};
     std::atomic<bool> reader_running_{false};
 
     MessageCallback msg_cb_;
 
-    // Internal io_context + thread for background reading
-    net::io_context ioc_;
+    // Internal thread for background reading
     std::thread reader_thread_;
     std::mutex read_mutex_;
 };

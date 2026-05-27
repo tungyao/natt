@@ -9,9 +9,7 @@ WsClient::WsClient()
 
 WsClient::~WsClient() {
     close();
-    if (reader_thread_.joinable()) {
-        reader_thread_.join();
-    }
+    joinReader();
 }
 
 bool WsClient::connect(const std::string& host, const std::string& port, const std::string& path) {
@@ -67,7 +65,9 @@ bool WsClient::receive(nlohmann::json& msg, int timeout_ms) {
         msg = nlohmann::json::parse(data);
         return true;
     } catch (const std::exception& e) {
-        spdlog::error("WsClient: receive error: {}", e.what());
+        if (connected_ || reader_running_) {
+            spdlog::error("WsClient: receive error: {}", e.what());
+        }
         connected_ = false;
         return false;
     }
@@ -80,7 +80,18 @@ void WsClient::close() {
     // Close socket to interrupt any blocking reads in the reader thread
     if (ws_) {
         beast::error_code ec;
-        ws_->next_layer().socket().close(ec);
+        auto& socket = beast::get_lowest_layer(*ws_).socket();
+        socket.cancel(ec);
+        socket.shutdown(tcp::socket::shutdown_both, ec);
+        socket.close(ec);
+    }
+    ioc_.stop();
+}
+
+void WsClient::joinReader() {
+    if (reader_thread_.joinable() &&
+        reader_thread_.get_id() != std::this_thread::get_id()) {
+        reader_thread_.join();
     }
 }
 

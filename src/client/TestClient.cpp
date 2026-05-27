@@ -10,16 +10,42 @@ TestClient::TestClient()
 }
 
 TestClient::~TestClient() {
-    // Stop WsClient (joins reader thread inside WsClient dtor)
-    if (ws_) ws_->close();
-    // Cancel relay test timer
+    stop();
+}
+
+void TestClient::stop() {
+    if (stopping_.exchange(true)) {
+        return;
+    }
+
+    if (ws_) {
+        ws_->setMessageCallback(nullptr);
+        ws_->close();
+        ws_->joinReader();
+    }
+
     if (relay_test_timer_) {
         relay_test_timer_->cancel();
     }
-    // Stop puncher
-    if (puncher_) puncher_->stop();
+
+    if (tun_) {
+        tun_->close();
+        tun_ready_ = false;
+    }
+
+    if (puncher_) {
+        puncher_->setPunchCallback(nullptr);
+        puncher_->setPacketCallback(nullptr);
+        puncher_->setRelayPacketCallback(nullptr);
+        puncher_->setRelayEventCallback(nullptr);
+        puncher_->stop();
+    }
+
     puncher_ioc_.stop();
-    if (puncher_thread_.joinable()) puncher_thread_.join();
+    if (puncher_thread_.joinable() &&
+        puncher_thread_.get_id() != std::this_thread::get_id()) {
+        puncher_thread_.join();
+    }
 }
 
 bool TestClient::run(const Options& opts) {
@@ -45,7 +71,7 @@ bool TestClient::run(const Options& opts) {
             stun_port = static_cast<uint16_t>(std::stoi(stun_host.substr(colon + 1)));
             stun_host = stun_host.substr(0, colon);
         }
-        stun_result_ = queryStun(stun_host, stun_port);
+        stun_result_ = queryStun(stun_host, stun_port, opts.udp_port);
         if (!stun_result_.success) {
             stun_result_.public_ip = "127.0.0.1";
             stun_result_.public_port = opts.udp_port;
@@ -145,6 +171,7 @@ bool TestClient::run(const Options& opts) {
 
     // Step 5: Start reader thread to receive async messages (punch_start, etc.)
     ws_->setMessageCallback([this](const std::string& type, const nlohmann::json& data) {
+        if (stopping_) return;
         spdlog::info("WsClient reader: <- type={}", type);
         if (type == "punch_start") {
             on_punch_start(data);
@@ -174,7 +201,7 @@ bool TestClient::run(const Options& opts) {
         nlohmann::json update = {
             {"type", "update_addr"},
             {"public_ip", stun_result_.public_ip},
-            {"public_port", static_cast<int>(opts.udp_port)},
+            {"public_port", static_cast<int>(stun_result_.public_port)},
             {"local_addrs", nlohmann::json::array()}
         };
         for (const auto& addr : local_addrs) {
@@ -207,12 +234,12 @@ bool TestClient::run(const Options& opts) {
     // Step 8: Wait for punch_result (via on_punch_start -> on_punch_result)
     // The punch_done_ flag is set by on_punch_result callback
     // After that, relay mode may activate if configured.
-    // Timeout after 60 seconds (allows relay mode to complete)
+    // Timeout after 30 seconds (allows relay mode to complete)
     auto wait_start = std::chrono::steady_clock::now();
-    while (!punch_done_) {
+    while (!punch_done_ && !stopping_) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         // If relay mode is active, punch_done_ stays true already
-        if (mode_ == ClientMode::RELAY) {
+        if (mode_.load() == ClientMode::RELAY) {
             // Keep the loop alive so the puncher thread continues receiving
             std::this_thread::sleep_for(std::chrono::seconds(1));
             continue;
@@ -225,10 +252,10 @@ bool TestClient::run(const Options& opts) {
     }
 
     // In relay mode, keep running to receive forwarded packets
-    if (mode_ == ClientMode::RELAY) {
+    if (mode_.load() == ClientMode::RELAY && !stopping_) {
         spdlog::info("Relay mode active — waiting for relay messages (30s timeout)...");
         auto relay_start = std::chrono::steady_clock::now();
-        while (true) {
+        while (!stopping_) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::steady_clock::now() - relay_start).count();
@@ -239,12 +266,12 @@ bool TestClient::run(const Options& opts) {
         }
     }
 
-    return punch_success_ || mode_ == ClientMode::RELAY;
+    return !stopping_ && (punch_success_ || mode_.load() == ClientMode::RELAY);
 }
 
 // ── STUN ───────────────────────────────────────────────────
 
-StunResult TestClient::queryStun(const std::string& stun_host, uint16_t stun_port) {
+StunResult TestClient::queryStun(const std::string& stun_host, uint16_t stun_port, uint16_t bind_port) {
     StunResult result;
 
     try {
@@ -253,6 +280,10 @@ StunResult TestClient::queryStun(const std::string& stun_host, uint16_t stun_por
         udp::endpoint stun_ep(net::ip::make_address(stun_host), stun_port);
 
         sock.open(udp::v4());
+        sock.set_option(net::socket_base::reuse_address(true));
+        if (bind_port != 0) {
+            sock.bind(udp::endpoint(udp::v4(), bind_port));
+        }
 
         nlohmann::json req = {
             {"type", "stun_request"},
@@ -304,6 +335,8 @@ StunResult TestClient::queryStun(const std::string& stun_host, uint16_t stun_por
 // ── Punch handlers ─────────────────────────────────────────
 
 void TestClient::on_punch_start(const nlohmann::json& data) {
+    if (stopping_) return;
+
     auto peer_node_id = data["peer_node_id"].get<std::string>();
     auto peer_public_ip = data["peer_public_ip"].get<std::string>();
     auto peer_public_port = static_cast<uint16_t>(data["peer_public_port"].get<int>());
@@ -341,6 +374,7 @@ void TestClient::on_punch_start(const nlohmann::json& data) {
 
     puncher_ = std::make_shared<UdpPuncher>(puncher_ioc_, bind_port);
     puncher_->setPunchCallback([this](const PunchResult& r) {
+        if (stopping_) return;
         on_punch_result(r);
     });
 
@@ -348,6 +382,7 @@ void TestClient::on_punch_start(const nlohmann::json& data) {
     // This ensures work is already queued when puncher_ioc_.run() starts.
     auto my_node_id = opts_.node_id;
     net::post(puncher_ioc_, [this, targets, my_node_id, peer_node_id]() {
+        if (stopping_) return;
         puncher_->start();
         for (const auto& t : targets) {
             puncher_->addTarget(t);
@@ -362,6 +397,8 @@ void TestClient::on_punch_start(const nlohmann::json& data) {
 }
 
 void TestClient::on_punch_result(const PunchResult& result) {
+    if (stopping_) return;
+
     if (result.success) {
         mode_ = ClientMode::P2P;
         punch_success_ = true;
@@ -385,10 +422,13 @@ void TestClient::on_punch_result(const PunchResult& result) {
 // ── Relay Mode ─────────────────────────────────────────────
 
 void TestClient::enter_relay_mode() {
+    if (stopping_) return;
+
     mode_ = ClientMode::RELAY;
 
     // Set up relay callbacks on the puncher (posted to puncher_ioc_)
     net::post(puncher_ioc_, [this]() {
+        if (stopping_) return;
         if (opts_.enable_tun && tun_ready_) {
             // TUN mode: relay packets go to TUN interface
             puncher_->setRelayPacketCallback([this](const std::string& from,
@@ -412,20 +452,23 @@ void TestClient::enter_relay_mode() {
 
     // Send relay register (posted to puncher_ioc_ since sendRelayRegister calls socket_)
     net::post(puncher_ioc_, [this]() {
+        if (stopping_) return;
         puncher_->sendRelayRegister(opts_.node_id, opts_.network_id, "test-token", relay_ep_);
     });
 
     // Start heartbeat
     net::post(puncher_ioc_, [this]() {
+        if (stopping_) return;
         puncher_->startRelayHeartbeat(opts_.node_id, relay_ep_, 10);
     });
 
     // Schedule first test message after a short delay (for registration to complete)
     net::post(puncher_ioc_, [this]() {
+        if (stopping_) return;
         relay_test_timer_ = std::make_unique<net::steady_timer>(puncher_ioc_);
         relay_test_timer_->expires_after(std::chrono::seconds(2));
         relay_test_timer_->async_wait([this](boost::system::error_code ec) {
-            if (ec) return;
+            if (ec || stopping_) return;
             if (relay_registered_ && !peer_node_id_.empty()) {
                 send_relay_test_message();
                 schedule_relay_test_message();
@@ -433,7 +476,7 @@ void TestClient::enter_relay_mode() {
                 // Wait for registration to complete, retry in 1s
                 relay_test_timer_->expires_after(std::chrono::seconds(1));
                 relay_test_timer_->async_wait([this](boost::system::error_code ec2) {
-                    if (ec2) return;
+                    if (ec2 || stopping_) return;
                     if (relay_registered_ && !peer_node_id_.empty()) {
                         send_relay_test_message();
                         schedule_relay_test_message();
@@ -469,6 +512,7 @@ void TestClient::on_relay_event(const std::string& event,
 }
 
 void TestClient::send_relay_test_message() {
+    if (stopping_) return;
     if (!relay_registered_ || peer_node_id_.empty()) return;
 
     ++relay_seq_;
@@ -481,15 +525,17 @@ void TestClient::send_relay_test_message() {
     spdlog::info("Relay test: sending seq={} to {} via relay", seq, to_id);
 
     net::post(puncher_ioc_, [this, from_id, to_id, seq, test_payload, relay_ep]() {
+        if (stopping_) return;
         puncher_->sendRelayPacket(from_id, to_id, seq, test_payload, relay_ep);
     });
 }
 
 void TestClient::schedule_relay_test_message() {
+    if (stopping_) return;
     if (!relay_test_timer_) return;
     relay_test_timer_->expires_after(std::chrono::seconds(5));
     relay_test_timer_->async_wait([this](boost::system::error_code ec) {
-        if (ec) return;
+        if (ec || stopping_) return;
         send_relay_test_message();
         schedule_relay_test_message();
     });
@@ -498,6 +544,8 @@ void TestClient::schedule_relay_test_message() {
 // ── TUN Bridge ─────────────────────────────────────────────
 
 void TestClient::on_virtual_ip_assigned(const nlohmann::json& data) {
+    if (stopping_) return;
+
     virtual_ip_ = data.value("virtual_ip", std::string());
     subnet_ = data.value("subnet", "10.0.0.0/16");
 
@@ -530,6 +578,7 @@ void TestClient::start_tun_bridge() {
 
     // Create TUN interface (runs on puncher_ioc_)
     net::post(puncher_ioc_, [this, prefix]() {
+        if (stopping_) return;
         tun_ = TunInterface::create(puncher_ioc_);
         if (!tun_->open(opts_.tun_name, virtual_ip_, prefix, opts_.tun_mtu)) {
             spdlog::error("TUN bridge: failed to create TUN interface");
@@ -550,10 +599,12 @@ void TestClient::start_tun_bridge() {
 }
 
 void TestClient::do_tun_read() {
+    if (stopping_) return;
     if (!tun_ready_ || !tun_) return;
 
     tun_->asyncRead(net::buffer(tun_read_buf_),
         [this](boost::system::error_code ec, std::size_t len) {
+            if (stopping_) return;
             if (ec) {
                 if (ec != boost::asio::error::operation_aborted) {
                     spdlog::error("TUN bridge: read error: {}", ec.message());
@@ -574,6 +625,7 @@ void TestClient::do_tun_read() {
 }
 
 void TestClient::tun_to_relay(const std::vector<uint8_t>& packet) {
+    if (stopping_) return;
     if (!relay_registered_ || peer_node_id_.empty()) {
         // No peer to send to yet
         return;
@@ -595,6 +647,7 @@ void TestClient::tun_to_relay(const std::vector<uint8_t>& packet) {
     auto relay_ep = relay_ep_;
 
     net::post(puncher_ioc_, [this, from_id, to_id, seq, payload_hex, relay_ep]() {
+        if (stopping_) return;
         puncher_->sendRelayPacket(from_id, to_id, seq, payload_hex, relay_ep);
         spdlog::debug("TUN bridge: relayed IP packet seq={} ({} bytes)", seq, payload_hex.size() / 2);
     });
@@ -603,6 +656,7 @@ void TestClient::tun_to_relay(const std::vector<uint8_t>& packet) {
 void TestClient::relay_to_tun(const std::string& from_node_id,
                               const std::string& payload,
                               int64_t seq) {
+    if (stopping_) return;
     if (!tun_ready_ || !tun_) return;
 
     // Decode hex payload back to raw IP packet
@@ -623,6 +677,7 @@ void TestClient::relay_to_tun(const std::string& from_node_id,
 
     // Write to TUN (async on puncher_ioc_)
     net::post(puncher_ioc_, [this, packet = std::move(packet), seq]() {
+        if (stopping_) return;
         if (!tun_ready_ || !tun_) return;
         tun_->write(packet);
         spdlog::debug("TUN bridge: wrote {} bytes from relay seq={}", packet.size(), seq);

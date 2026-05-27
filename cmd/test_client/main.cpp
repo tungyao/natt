@@ -1,5 +1,8 @@
 #include <iostream>
 #include <csignal>
+#include <atomic>
+#include <chrono>
+#include <thread>
 
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -7,9 +10,10 @@
 #include "client/TestClient.h"
 
 static std::shared_ptr<TestClient> g_client;
+static volatile std::sig_atomic_t g_stop_requested = 0;
 
 void signal_handler(int) {
-    spdlog::info("Shutting down...");
+    g_stop_requested = 1;
 }
 
 int main(int argc, char* argv[]) {
@@ -82,23 +86,64 @@ int main(int argc, char* argv[]) {
         spdlog::info("Auto-assigned UDP port: {}", opts.udp_port);
     }
 
+    std::atomic<bool> monitor_done{false};
+    std::thread signal_monitor;
+    auto join_signal_monitor = [&]() {
+        monitor_done = true;
+        if (signal_monitor.joinable()) {
+            signal_monitor.join();
+        }
+    };
+
     try {
         g_client = std::make_shared<TestClient>();
 
+        signal_monitor = std::thread([&monitor_done]() {
+            bool logged = false;
+            while (!monitor_done.load()) {
+                if (g_stop_requested) {
+                    if (!logged) {
+                        spdlog::info("Shutting down...");
+                        logged = true;
+                    }
+                    if (g_client) {
+                        g_client->stop();
+                    }
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+        });
+
         auto result = g_client->run(opts);
+        join_signal_monitor();
+
+        if (g_stop_requested) {
+            g_client->stop();
+            g_client.reset();
+            return 130;
+        }
+
         if (result) {
             if (g_client->punchSuccess()) {
                 spdlog::info("✓ P2P Hole Punch completed successfully!");
             } else {
                 spdlog::info("✓ Relay fallback completed successfully!");
             }
+            g_client.reset();
             return 0;
         } else {
             spdlog::warn("✗ NAT traversal did not succeed");
+            g_client.reset();
             return 1;
         }
 
     } catch (const std::exception& e) {
+        join_signal_monitor();
+        if (g_client) {
+            g_client->stop();
+            g_client.reset();
+        }
         spdlog::critical("Fatal: {}", e.what());
         return 1;
     }

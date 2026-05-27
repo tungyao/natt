@@ -48,12 +48,15 @@ public:
     // Initialize and run the full flow (synchronous)
     bool run(const Options& opts);
 
+    // Request shutdown from another thread (e.g. signal monitor)
+    void stop();
+
     // Check result
     bool punchSuccess() const { return punch_success_; }
 
 private:
     // STUN query (synchronous UDP)
-    StunResult queryStun(const std::string& stun_host, uint16_t stun_port);
+    StunResult queryStun(const std::string& stun_host, uint16_t stun_port, uint16_t bind_port);
 
     // Handle punch_start from WS
     void on_punch_start(const nlohmann::json& data);
@@ -88,13 +91,14 @@ private:
 
     std::atomic<bool> punch_success_{false};
     std::atomic<bool> punch_done_{false};
+    std::atomic<bool> stopping_{false};
 
     // IoContext for UdpPuncher
     net::io_context puncher_ioc_;
     std::thread puncher_thread_;
 
     // Relay mode state
-    ClientMode mode_{ClientMode::PUNCHING};
+    std::atomic<ClientMode> mode_{ClientMode::PUNCHING};
     std::string peer_node_id_;
     std::string relay_host_;
     uint16_t relay_port_ = 7000;
