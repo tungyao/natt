@@ -704,7 +704,7 @@ std::optional<auth::JwtPayload> HttpServer::authenticate(
         return std::nullopt;
     }
 
-    auto token = auth_header.substr(7);
+    std::string token(auth_header.substr(7));
     auto result = jwt_.verify_token(token);
     if (!result.has_value()) {
         spdlog::debug("Token verification failed");
