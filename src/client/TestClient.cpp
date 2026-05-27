@@ -5,6 +5,21 @@
 #include <sstream>
 #include <chrono>
 
+namespace {
+
+std::string hex_encode(const std::vector<uint8_t>& data) {
+    static constexpr char hex[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(data.size() * 2);
+    for (auto b : data) {
+        out.push_back(hex[b >> 4]);
+        out.push_back(hex[b & 0x0f]);
+    }
+    return out;
+}
+
+} // namespace
+
 TestClient::TestClient()
 {
 }
@@ -32,6 +47,7 @@ void TestClient::stop() {
         tun_->close();
         tun_ready_ = false;
     }
+    tun_starting_ = false;
 
     if (puncher_) {
         puncher_->setPunchCallback(nullptr);
@@ -42,10 +58,23 @@ void TestClient::stop() {
     }
 
     puncher_ioc_.stop();
+    puncher_work_guard_.reset();
     if (puncher_thread_.joinable() &&
         puncher_thread_.get_id() != std::this_thread::get_id()) {
         puncher_thread_.join();
     }
+}
+
+void TestClient::ensure_io_thread() {
+    if (puncher_thread_.joinable()) {
+        return;
+    }
+    puncher_ioc_.restart();
+    puncher_work_guard_ = std::make_unique<net::executor_work_guard<net::io_context::executor_type>>(
+        puncher_ioc_.get_executor());
+    puncher_thread_ = std::thread([this]() {
+        puncher_ioc_.run();
+    });
 }
 
 bool TestClient::run(const Options& opts) {
@@ -177,6 +206,8 @@ bool TestClient::run(const Options& opts) {
             on_punch_start(data);
         } else if (type == "virtual_ip_assigned") {
             on_virtual_ip_assigned(data);
+        } else if (type == "tun_packet") {
+            relay_to_tun("server", data.value("payload", std::string()), 0);
         } else if (type == "error") {
             spdlog::error("Server error: {}", data.value("message", ""));
         }
@@ -229,6 +260,14 @@ bool TestClient::run(const Options& opts) {
             return false;
         }
         spdlog::info("Sent connect_peer -> {}", opts.connect_node_id);
+    }
+
+    if (opts.enable_tun && opts.connect_node_id.empty()) {
+        spdlog::info("TUN mode active — connected to server gateway, waiting for traffic...");
+        while (!stopping_) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+        return false;
     }
 
     // Step 8: Wait for punch_result (via on_punch_start -> on_punch_result)
@@ -391,9 +430,7 @@ void TestClient::on_punch_start(const nlohmann::json& data) {
     });
 
     // Start puncher io_context thread (will pick up queued work)
-    puncher_thread_ = std::thread([this]() {
-        puncher_ioc_.run();
-    });
+    ensure_io_thread();
 }
 
 void TestClient::on_punch_result(const PunchResult& result) {
@@ -547,6 +584,7 @@ void TestClient::on_virtual_ip_assigned(const nlohmann::json& data) {
     if (stopping_) return;
 
     virtual_ip_ = data.value("virtual_ip", std::string());
+    gateway_ip_ = data.value("gateway_ip", std::string());
     subnet_ = data.value("subnet", "10.0.0.0/16");
 
     if (virtual_ip_.empty()) {
@@ -554,8 +592,16 @@ void TestClient::on_virtual_ip_assigned(const nlohmann::json& data) {
         return;
     }
 
+    if ((tun_ready_ && tun_) || tun_starting_) {
+        spdlog::debug("Virtual IP assignment already applied: {}", virtual_ip_);
+        return;
+    }
+
     spdlog::info("═══════════════════════════════════════════");
     spdlog::info("  Virtual IP assigned: {} / {}", virtual_ip_, subnet_);
+    if (!gateway_ip_.empty()) {
+        spdlog::info("  Server gateway: {}", gateway_ip_);
+    }
     spdlog::info("═══════════════════════════════════════════");
 
     if (opts_.enable_tun) {
@@ -568,6 +614,11 @@ void TestClient::start_tun_bridge() {
         spdlog::warn("TUN bridge: no virtual IP, cannot start");
         return;
     }
+    if (tun_starting_.exchange(true) || tun_ready_) {
+        return;
+    }
+
+    ensure_io_thread();
 
     // Parse subnet prefix
     int prefix = 16;
@@ -583,10 +634,12 @@ void TestClient::start_tun_bridge() {
         if (!tun_->open(opts_.tun_name, virtual_ip_, prefix, opts_.tun_mtu)) {
             spdlog::error("TUN bridge: failed to create TUN interface");
             tun_.reset();
+            tun_starting_ = false;
             return;
         }
 
         tun_ready_ = true;
+        tun_starting_ = false;
         spdlog::info("TUN bridge: {} configured with {}/{}",
                      tun_->interfaceName(), virtual_ip_, prefix);
 
@@ -617,11 +670,27 @@ void TestClient::do_tun_read() {
                 tun_read_buf_.data(),
                 tun_read_buf_.data() + len);
 
-            tun_to_relay(packet);
+            if (mode_.load() == ClientMode::RELAY) {
+                tun_to_relay(packet);
+            } else {
+                send_tun_packet_to_server(packet);
+            }
 
             // Continue reading
             do_tun_read();
         });
+}
+
+void TestClient::send_tun_packet_to_server(const std::vector<uint8_t>& packet) {
+    if (stopping_ || !ws_ || packet.empty()) return;
+
+    nlohmann::json msg = {
+        {"type", "tun_packet"},
+        {"payload", hex_encode(packet)}
+    };
+    if (!ws_->send(msg)) {
+        spdlog::warn("TUN bridge: failed to send packet to server");
+    }
 }
 
 void TestClient::tun_to_relay(const std::vector<uint8_t>& packet) {

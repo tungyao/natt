@@ -225,11 +225,12 @@ public:
         spdlog::info("TunLinux: created {} with fd={}", ifname_, fd_);
 
         // Set MTU
+        int ctl_fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
         if (mtu > 0) {
             std::memset(&ifr, 0, sizeof(ifr));
             std::strncpy(ifr.ifr_name, ifname_.c_str(), IFNAMSIZ - 1);
             ifr.ifr_mtu = mtu;
-            if (ioctl(fd_, SIOCSIFMTU, &ifr) < 0) {
+            if (ctl_fd < 0 || ioctl(ctl_fd, SIOCSIFMTU, &ifr) < 0) {
                 spdlog::warn("TunLinux: set MTU {}: {}", mtu, strerror(errno));
             } else {
                 spdlog::info("TunLinux: set MTU={} on {}", mtu, ifname_);
@@ -239,13 +240,16 @@ public:
         // Bring interface UP
         std::memset(&ifr, 0, sizeof(ifr));
         std::strncpy(ifr.ifr_name, ifname_.c_str(), IFNAMSIZ - 1);
-        if (ioctl(fd_, SIOCGIFFLAGS, &ifr) < 0) {
+        if (ctl_fd < 0 || ioctl(ctl_fd, SIOCGIFFLAGS, &ifr) < 0) {
             spdlog::warn("TunLinux: get flags: {}", strerror(errno));
         } else {
             ifr.ifr_flags |= IFF_UP | IFF_RUNNING;
-            if (ioctl(fd_, SIOCSIFFLAGS, &ifr) < 0) {
+            if (ioctl(ctl_fd, SIOCSIFFLAGS, &ifr) < 0) {
                 spdlog::warn("TunLinux: set UP: {}", strerror(errno));
             }
+        }
+        if (ctl_fd >= 0) {
+            ::close(ctl_fd);
         }
 
         // Assign IP address via netlink
@@ -267,12 +271,17 @@ public:
         opened_ = false;
 
         boost::system::error_code ec;
-        stream_.close(ec);
-
-        if (fd_ >= 0) {
+        if (stream_.is_open()) {
+            stream_.cancel(ec);
+            auto released = stream_.release();
+            if (released >= 0) {
+                ::close(released);
+            }
+        } else if (fd_ >= 0) {
             ::close(fd_);
             fd_ = -1;
         }
+        fd_ = -1;
 
         spdlog::info("TunLinux: closed {}", ifname_);
     }

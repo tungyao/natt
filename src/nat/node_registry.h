@@ -15,6 +15,9 @@ struct NodeInfo {
     std::string public_ip;
     int public_port = 0;
     std::vector<std::string> local_addrs;
+    std::string virtual_ip;
+    std::string gateway_ip;
+    std::string subnet;
     bool online = false;
     std::chrono::system_clock::time_point last_seen;
 
@@ -28,6 +31,7 @@ struct NodeInfo {
             j["peer_local_addrs"].push_back(addr);
         }
         j["peer_public_key"] = public_key;
+        j["peer_virtual_ip"] = virtual_ip;
         return j;
     }
 
@@ -41,6 +45,9 @@ struct NodeInfo {
             j["local_addrs"].push_back(addr);
         }
         j["public_key"] = public_key;
+        j["virtual_ip"] = virtual_ip;
+        j["gateway_ip"] = gateway_ip;
+        j["subnet"] = subnet;
         j["online"] = online;
         return j;
     }

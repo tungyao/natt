@@ -7,13 +7,19 @@
 #include <memory>
 #include <string>
 #include <functional>
+#include <array>
+#include <atomic>
+#include <mutex>
+#include <unordered_map>
 
 #include "config/config.h"
 #include "auth/jwt.h"
+#include "ipam/IpAllocator.h"
 #include "service/user_service.h"
 #include "service/device_service.h"
 #include "service/network_service.h"
 #include "service/peer_manager.h"
+#include "tun/TunInterface.h"
 #include "nat/session_manager.h"
 #include "nat/node_registry.h"
 #include "nat/message_dispatcher.h"
@@ -31,8 +37,10 @@ public:
                UserService& user_svc,
                DeviceService& device_svc,
                NetworkService& network_svc,
+               IpAllocator& ipam,
                auth::JwtManager& jwt,
                PeerManager& peer_mgr);
+    ~HttpServer();
 
     void start();
 
@@ -69,6 +77,14 @@ private:
 
     // WebSocket handler
     void handle_websocket_upgrade(tcp::socket&& socket, http::request<http::string_body> req);
+    NodeInfo assign_virtual_ip(const std::string& node_id,
+                               const std::string& network_id,
+                               const std::string& public_key);
+    bool ensure_tun_gateway(const std::string& network_id);
+    void do_tun_read(const std::string& network_id);
+    void handle_tun_packet(const std::string& node_id, const nlohmann::json& msg);
+    void forward_tun_packet(const std::string& network_id,
+                            const std::vector<uint8_t>& packet);
 
     net::io_context& ioc_;
     tcp::acceptor acceptor_;
@@ -77,6 +93,7 @@ private:
     UserService& user_svc_;
     DeviceService& device_svc_;
     NetworkService& network_svc_;
+    IpAllocator& ipam_;
     auth::JwtManager& jwt_;
     PeerManager& peer_mgr_;
 
@@ -85,4 +102,12 @@ private:
     NodeRegistry node_registry_;
     MessageDispatcher msg_dispatcher_;
     std::shared_ptr<HeartbeatMonitor> heartbeat_monitor_;
+    std::atomic<bool> shutting_down_{false};
+
+    struct TunState {
+        std::shared_ptr<TunInterface> tun;
+        std::array<char, 2000> buffer;
+    };
+    std::mutex tun_mutex_;
+    std::unordered_map<std::string, std::shared_ptr<TunState>> tun_by_network_;
 };

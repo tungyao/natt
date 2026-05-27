@@ -84,16 +84,9 @@ int main(int argc, char* argv[]) {
 
         // ── IPAM ──
         auto ipam = std::make_unique<IpAllocator>();
-        // Seed IPAM pools from configured networks
-        auto all_networks = network_repo->find_by_owner(0);  // all networks
-        // Actually load per-owner; simplified: iterate all
-        for (const auto& net : network_repo->find_by_owner(0)) {
-            auto devices = network_repo->get_network_devices(net.id);
-            std::unordered_set<std::string> reserved;
-            for (const auto& d : devices) {
-                if (!d.virtual_ip.empty()) reserved.insert(d.virtual_ip);
-            }
-            ipam->addPool(net.name, net.subnet, reserved);
+        // Seed configured virtual networks. The .1 address is reserved as the server gateway.
+        for (const auto& [name, cidr] : config.ipam.pools) {
+            ipam->addPool(name, cidr);
         }
 
         // ── Services ──
@@ -110,7 +103,7 @@ int main(int argc, char* argv[]) {
         g_http_server = std::make_shared<HttpServer>(
             ioc, config,
             *user_svc, *device_svc, *network_svc,
-            *jwt, *peer_mgr
+            *ipam, *jwt, *peer_mgr
         );
         g_http_server->start();
 
@@ -118,6 +111,7 @@ int main(int argc, char* argv[]) {
 
         // ── Run ──
         ioc.run();
+        g_http_server.reset();
 
     } catch (const std::exception& e) {
         spdlog::critical("Fatal error: {}", e.what());

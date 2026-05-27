@@ -4,12 +4,53 @@
 #include <spdlog/spdlog.h>
 #include <sstream>
 #include <thread>
+#include <algorithm>
+
+namespace {
+
+std::string hex_encode(const std::vector<uint8_t>& data) {
+    static constexpr char hex[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(data.size() * 2);
+    for (auto b : data) {
+        out.push_back(hex[b >> 4]);
+        out.push_back(hex[b & 0x0f]);
+    }
+    return out;
+}
+
+std::vector<uint8_t> hex_decode(const std::string& hex) {
+    auto nibble = [](char c) -> uint8_t {
+        if (c >= '0' && c <= '9') return static_cast<uint8_t>(c - '0');
+        if (c >= 'a' && c <= 'f') return static_cast<uint8_t>(c - 'a' + 10);
+        if (c >= 'A' && c <= 'F') return static_cast<uint8_t>(c - 'A' + 10);
+        return 0;
+    };
+
+    std::vector<uint8_t> out;
+    out.reserve(hex.size() / 2);
+    for (size_t i = 0; i + 1 < hex.size(); i += 2) {
+        out.push_back(static_cast<uint8_t>((nibble(hex[i]) << 4) | nibble(hex[i + 1])));
+    }
+    return out;
+}
+
+std::string ipv4_dst(const std::vector<uint8_t>& packet) {
+    if (packet.size() < 20 || (packet[0] >> 4) != 4) return {};
+    return std::to_string(packet[16]) + "." +
+           std::to_string(packet[17]) + "." +
+           std::to_string(packet[18]) + "." +
+           std::to_string(packet[19]);
+}
+
+} // namespace
 
 HttpServer::HttpServer(net::io_context& ioc,
                        const Config& config,
                        UserService& user_svc,
                        DeviceService& device_svc,
                        NetworkService& network_svc,
+                       IpAllocator& ipam,
                        auth::JwtManager& jwt,
                        PeerManager& peer_mgr)
     : ioc_(ioc)
@@ -18,6 +59,7 @@ HttpServer::HttpServer(net::io_context& ioc,
     , user_svc_(user_svc)
     , device_svc_(device_svc)
     , network_svc_(network_svc)
+    , ipam_(ipam)
     , jwt_(jwt)
     , peer_mgr_(peer_mgr)
 {
@@ -80,18 +122,17 @@ HttpServer::HttpServer(net::io_context& ioc,
             spdlog::info("update_addr: node_id={}, ip={}:{}, {} local addrs",
                          node_id, public_ip, public_port, local_addrs.size());
 
-            // Send virtual IP assignment after device is fully registered
-            auto device = device_svc_.get_device(node_id);
-            if (device.has_value() && !device->virtual_ip.empty()) {
-                // Subnet comes from config.yaml — the IPAM pools section
-                // For MVP, the client will configure TUN with this IP + subnet
+            auto node = node_registry_.findNode(node_id);
+            if (node.has_value() && !node->virtual_ip.empty()) {
                 nlohmann::json vip_msg = {
                     {"type", "virtual_ip_assigned"},
-                    {"virtual_ip", device->virtual_ip},
-                    {"subnet", "10.0.0.0/16"}  // default, overridden by config
+                    {"virtual_ip", node->virtual_ip},
+                    {"gateway_ip", node->gateway_ip},
+                    {"subnet", node->subnet}
                 };
                 session->send_json(vip_msg.dump());
-                spdlog::info("Sent virtual IP {} to node {}", device->virtual_ip, node_id);
+                spdlog::info("Sent virtual IP {} to node {} (gateway {}, subnet {})",
+                             node->virtual_ip, node_id, node->gateway_ip, node->subnet);
             }
         }
     );
@@ -170,6 +211,161 @@ HttpServer::HttpServer(net::io_context& ioc,
             spdlog::info("NAT signaling: connect_peer {} → {}", node_id, target_node_id);
         }
     );
+}
+
+HttpServer::~HttpServer() {
+    shutting_down_ = true;
+}
+
+NodeInfo HttpServer::assign_virtual_ip(const std::string& node_id,
+                                       const std::string& network_id,
+                                       const std::string& public_key) {
+    auto network = network_id.empty() ? std::string("default") : network_id;
+    if (ipam_.getSubnet(network).empty()) {
+        auto it = config_.ipam.pools.find(network);
+        std::string cidr;
+        if (it != config_.ipam.pools.end()) {
+            cidr = it->second;
+        } else if (auto def = config_.ipam.pools.find("default"); def != config_.ipam.pools.end()) {
+            cidr = def->second;
+        } else {
+            cidr = "10.0.0.0/24";
+        }
+        ipam_.addPool(network, cidr);
+    }
+
+    auto existing = node_registry_.findNode(node_id);
+    auto virtual_ip = existing && !existing->virtual_ip.empty()
+        ? existing->virtual_ip
+        : ipam_.allocate(network);
+
+    NodeInfo info;
+    info.node_id = node_id;
+    info.network_id = network;
+    info.public_key = public_key;
+    info.virtual_ip = virtual_ip;
+    info.gateway_ip = ipam_.gatewayIp(network);
+    info.subnet = ipam_.getSubnet(network);
+    info.online = true;
+    info.last_seen = std::chrono::system_clock::now();
+    return info;
+}
+
+bool HttpServer::ensure_tun_gateway(const std::string& network_id) {
+    auto subnet = ipam_.getSubnet(network_id);
+    auto gateway_ip = ipam_.gatewayIp(network_id);
+    if (subnet.empty() || gateway_ip.empty()) return false;
+
+    {
+        std::lock_guard<std::mutex> lock(tun_mutex_);
+        if (tun_by_network_.find(network_id) != tun_by_network_.end()) {
+            return true;
+        }
+    }
+
+    auto slash = subnet.find('/');
+    int prefix = 24;
+    if (slash != std::string::npos) {
+        prefix = std::stoi(subnet.substr(slash + 1));
+    }
+
+    auto state = std::make_shared<TunState>();
+    state->tun = TunInterface::create(ioc_);
+    if (!state->tun->open("natgw%d", gateway_ip, prefix, 1300)) {
+        spdlog::warn("TUN gateway: failed to create gateway for network {} at {}/{}",
+                     network_id, gateway_ip, prefix);
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(tun_mutex_);
+        tun_by_network_[network_id] = state;
+    }
+
+    spdlog::info("TUN gateway: network {} server gateway {} on {}",
+                 network_id, gateway_ip, state->tun->interfaceName());
+    do_tun_read(network_id);
+    return true;
+}
+
+void HttpServer::do_tun_read(const std::string& network_id) {
+    std::shared_ptr<TunState> state;
+    {
+        std::lock_guard<std::mutex> lock(tun_mutex_);
+        auto it = tun_by_network_.find(network_id);
+        if (it == tun_by_network_.end()) return;
+        state = it->second;
+    }
+
+    state->tun->asyncRead(net::buffer(state->buffer),
+        [this, network_id, state](boost::system::error_code ec, std::size_t len) {
+            if (ec) {
+                if (ec != boost::asio::error::operation_aborted) {
+                    spdlog::warn("TUN gateway read error on {}: {}", network_id, ec.message());
+                }
+                return;
+            }
+
+            std::vector<uint8_t> packet(state->buffer.data(), state->buffer.data() + len);
+            forward_tun_packet(network_id, packet);
+            do_tun_read(network_id);
+        });
+}
+
+void HttpServer::forward_tun_packet(const std::string& network_id,
+                                    const std::vector<uint8_t>& packet) {
+    auto dst = ipv4_dst(packet);
+    if (dst.empty()) return;
+
+    auto peers = node_registry_.listNetworkNodes(network_id);
+    auto it = std::find_if(peers.begin(), peers.end(), [&](const NodeInfo& node) {
+        return node.virtual_ip == dst;
+    });
+    if (it == peers.end()) {
+        spdlog::debug("TUN gateway: no online node for dst {}", dst);
+        return;
+    }
+
+    nlohmann::json msg = {
+        {"type", "tun_packet"},
+        {"payload", hex_encode(packet)}
+    };
+    session_mgr_.sendTo(it->node_id, msg);
+}
+
+void HttpServer::handle_tun_packet(const std::string& node_id, const nlohmann::json& msg) {
+    auto node = node_registry_.findNode(node_id);
+    if (!node.has_value()) return;
+
+    auto payload = msg.value("payload", std::string());
+    auto packet = hex_decode(payload);
+    if (packet.empty()) return;
+
+    auto dst = ipv4_dst(packet);
+    if (!dst.empty() && dst != node->gateway_ip) {
+        auto peers = node_registry_.listNetworkNodes(node->network_id);
+        auto it = std::find_if(peers.begin(), peers.end(), [&](const NodeInfo& peer) {
+            return peer.virtual_ip == dst;
+        });
+        if (it != peers.end()) {
+            nlohmann::json forward = {
+                {"type", "tun_packet"},
+                {"payload", payload}
+            };
+            session_mgr_.sendTo(it->node_id, forward);
+            return;
+        }
+    }
+
+    std::shared_ptr<TunState> state;
+    {
+        std::lock_guard<std::mutex> lock(tun_mutex_);
+        auto it = tun_by_network_.find(node->network_id);
+        if (it == tun_by_network_.end()) return;
+        state = it->second;
+    }
+
+    state->tun->write(packet);
 }
 
 void HttpServer::start() {
@@ -526,19 +722,14 @@ void HttpServer::handle_websocket_upgrade(tcp::socket&& socket,
             [this](const std::string& node_id,
                    const std::string& network_id,
                    const std::string& public_key) -> beast_ws::AuthResult {
-                // Register node in NodeRegistry
-                NodeInfo info;
-                info.node_id = node_id;
-                info.network_id = network_id;
-                info.public_key = public_key;
-                info.online = true;
-                info.last_seen = std::chrono::system_clock::now();
+                auto info = assign_virtual_ip(node_id, network_id, public_key);
                 node_registry_.registerNode(info);
+                ensure_tun_gateway(info.network_id);
 
                 beast_ws::AuthResult result;
                 result.success = true;
                 result.node_id = node_id;
-                result.network_id = network_id;
+                result.network_id = info.network_id;
                 result.public_key = public_key;
                 return result;
             },
@@ -563,6 +754,17 @@ void HttpServer::handle_websocket_upgrade(tcp::socket&& socket,
                     }
                 }
                 session->send_json(peer_list.dump());
+
+                auto node = node_registry_.findNode(nid);
+                if (node.has_value() && !node->virtual_ip.empty()) {
+                    nlohmann::json vip_msg = {
+                        {"type", "virtual_ip_assigned"},
+                        {"virtual_ip", node->virtual_ip},
+                        {"gateway_ip", node->gateway_ip},
+                        {"subnet", node->subnet}
+                    };
+                    session->send_json(vip_msg.dump());
+                }
 
                 // Also broadcast updated peer list to other nodes in the network
                 nlohmann::json broadcast_list = {
@@ -591,6 +793,8 @@ void HttpServer::handle_websocket_upgrade(tcp::socket&& socket,
                     msg_dispatcher_.dispatch(session, node_id, msg);
                 } else if (type == "connect_peer") {
                     msg_dispatcher_.dispatch(session, node_id, msg);
+                } else if (type == "tun_packet") {
+                    handle_tun_packet(node_id, msg);
                 } else {
                     spdlog::warn("Unknown message type '{}' from node_id={}", type, node_id);
                 }
@@ -598,6 +802,7 @@ void HttpServer::handle_websocket_upgrade(tcp::socket&& socket,
 
             // Disconnect handler
             [this](const std::string& node_id) {
+                if (shutting_down_) return;
                 auto node = node_registry_.findNode(node_id);
                 if (node.has_value()) {
                     auto network_id = node->network_id;
@@ -681,6 +886,7 @@ void HttpServer::handle_websocket_upgrade(tcp::socket&& socket,
 
             // Disconnect handler
             [this](const std::string& node_id) {
+                if (shutting_down_) return;
                 peer_mgr_.unregister_session(node_id);
                 device_svc_.set_offline(node_id);
             },

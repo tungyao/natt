@@ -100,6 +100,11 @@ list(REMOVE_ITEM SERVER_SOURCES
 list(APPEND SERVER_SOURCES
     src/ipam/IpAllocator.cpp
 )
+if(WIN32)
+    list(APPEND SERVER_SOURCES src/tun/TunWindows.cpp)
+else()
+    list(APPEND SERVER_SOURCES src/tun/TunLinux.cpp)
+endif()
 list(APPEND SERVER_SOURCES cmd/server/main.cpp)
 
 add_executable(natmesh-server ${SERVER_SOURCES} ${LIB_HEADERS})

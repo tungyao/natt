@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <map>
 #include <yaml-cpp/yaml.h>
 
 struct ServerConfig {
@@ -28,12 +29,20 @@ struct LogConfig {
     std::string pattern = "[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] [%s:%#] %v";
 };
 
+struct IpamConfig {
+    std::map<std::string, std::string> pools = {
+        {"home", "10.0.0.0/16"},
+        {"default", "10.0.0.0/24"}
+    };
+};
+
 struct Config {
     ServerConfig server;
     DatabaseConfig database;
     JwtConfig jwt;
     WebSocketConfig websocket;
     LogConfig logging;
+    IpamConfig ipam;
 
     static Config load(const std::string& path);
     static Config load_default();

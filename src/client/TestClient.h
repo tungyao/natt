@@ -78,6 +78,8 @@ private:
     void on_virtual_ip_assigned(const nlohmann::json& data);
     void start_tun_bridge();
     void do_tun_read();
+    void ensure_io_thread();
+    void send_tun_packet_to_server(const std::vector<uint8_t>& packet);
     void tun_to_relay(const std::vector<uint8_t>& packet);
     void relay_to_tun(const std::string& from_node_id,
                       const std::string& payload,
@@ -95,6 +97,7 @@ private:
 
     // IoContext for UdpPuncher
     net::io_context puncher_ioc_;
+    std::unique_ptr<net::executor_work_guard<net::io_context::executor_type>> puncher_work_guard_;
     std::thread puncher_thread_;
 
     // Relay mode state
@@ -110,7 +113,9 @@ private:
     // TUN bridge state
     std::shared_ptr<TunInterface> tun_;
     std::string virtual_ip_;
+    std::string gateway_ip_;
     std::string subnet_;
     std::array<char, 1500> tun_read_buf_;
     std::atomic<bool> tun_ready_{false};
+    std::atomic<bool> tun_starting_{false};
 };

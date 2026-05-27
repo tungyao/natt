@@ -152,9 +152,9 @@ std::vector<Device> NetworkRepo::get_network_devices(int64_t network_id) {
             try { d.lan_ips = nlohmann::json::parse(lan_str).get<std::vector<std::string>>(); } catch (...) {}
         }
 
-        d.online = sqlite3_column_int(stmt, 8) != 0;
-        auto vi = sqlite3_column_text(stmt, 9);
+        auto vi = sqlite3_column_text(stmt, 8);
         if (vi) d.virtual_ip = reinterpret_cast<const char*>(vi);
+        d.online = sqlite3_column_int(stmt, 9) != 0;
         auto hb = sqlite3_column_text(stmt, 10);
         if (hb) d.last_heartbeat = reinterpret_cast<const char*>(hb);
         d.created_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 11));

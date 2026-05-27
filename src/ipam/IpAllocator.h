@@ -40,6 +40,9 @@ public:
     /// Get the subnet prefix length for a network.
     int getPrefix(const std::string& network_id) const;
 
+    /// Get the reserved gateway address for a network (base + 1).
+    std::string gatewayIp(const std::string& network_id) const;
+
     /// Number of allocated IPs in a network.
     size_t allocatedCount(const std::string& network_id) const;
 

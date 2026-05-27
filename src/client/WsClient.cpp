@@ -43,6 +43,7 @@ bool WsClient::send(const nlohmann::json& msg) {
     if (!connected_ || !ws_) return false;
 
     try {
+        std::lock_guard<std::mutex> lock(write_mutex_);
         auto payload = msg.dump();
         ws_->text(true);
         ws_->write(net::buffer(payload));

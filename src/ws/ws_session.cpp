@@ -49,9 +49,7 @@ WsSession::WsSession(tcp::socket&& socket,
 }
 
 WsSession::~WsSession() {
-    if (!node_id_.empty() && disconnect_handler_) {
-        disconnect_handler_(node_id_);
-    }
+    heartbeat_timer_.cancel();
 }
 
 void WsSession::start() {
@@ -113,7 +111,9 @@ void WsSession::do_read() {
                 if (ec != websocket::error::closed) {
                     spdlog::debug("WebSocket read error: {}", ec.message());
                 }
-                if (!self->node_id_.empty() && self->disconnect_handler_) {
+                if (ec != boost::asio::error::operation_aborted &&
+                    ec != websocket::error::closed &&
+                    !self->node_id_.empty() && self->disconnect_handler_) {
                     self->disconnect_handler_(self->node_id_);
                 }
                 return;
@@ -141,7 +141,8 @@ void WsSession::do_write() {
         [self = shared_from_this()](beast::error_code ec, std::size_t) {
             if (ec) {
                 spdlog::error("WebSocket write error: {}", ec.message());
-                if (!self->node_id_.empty() && self->disconnect_handler_) {
+                if (ec != boost::asio::error::operation_aborted &&
+                    !self->node_id_.empty() && self->disconnect_handler_) {
                     self->disconnect_handler_(self->node_id_);
                 }
                 return;

@@ -81,9 +81,9 @@ std::optional<Device> DeviceRepo::find_by_node_id(const std::string& node_id) {
             } catch (...) {}
         }
 
-        d.online = sqlite3_column_int(stmt, 8) != 0;
-        auto vi = sqlite3_column_text(stmt, 9);
+        auto vi = sqlite3_column_text(stmt, 8);
         if (vi) d.virtual_ip = reinterpret_cast<const char*>(vi);
+        d.online = sqlite3_column_int(stmt, 9) != 0;
         auto hb = sqlite3_column_text(stmt, 10);
         if (hb) d.last_heartbeat = reinterpret_cast<const char*>(hb);
         d.created_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 11));
@@ -122,9 +122,9 @@ std::vector<Device> DeviceRepo::find_by_user_id(int64_t user_id) {
             try { d.lan_ips = nlohmann::json::parse(lan_str).get<std::vector<std::string>>(); } catch (...) {}
         }
 
-        d.online = sqlite3_column_int(stmt, 8) != 0;
-        auto vi = sqlite3_column_text(stmt, 9);
+        auto vi = sqlite3_column_text(stmt, 8);
         if (vi) d.virtual_ip = reinterpret_cast<const char*>(vi);
+        d.online = sqlite3_column_int(stmt, 9) != 0;
         auto hb = sqlite3_column_text(stmt, 10);
         if (hb) d.last_heartbeat = reinterpret_cast<const char*>(hb);
         d.created_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 11));
@@ -231,9 +231,9 @@ std::vector<Device> DeviceRepo::find_offline_timeout(int timeout_sec) {
         if (lan_str) {
             try { d.lan_ips = nlohmann::json::parse(lan_str).get<std::vector<std::string>>(); } catch (...) {}
         }
-        d.online = sqlite3_column_int(stmt, 8) != 0;
-        auto vi = sqlite3_column_text(stmt, 9);
+        auto vi = sqlite3_column_text(stmt, 8);
         if (vi) d.virtual_ip = reinterpret_cast<const char*>(vi);
+        d.online = sqlite3_column_int(stmt, 9) != 0;
         auto hb = sqlite3_column_text(stmt, 10);
         if (hb) d.last_heartbeat = reinterpret_cast<const char*>(hb);
         d.created_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 11));

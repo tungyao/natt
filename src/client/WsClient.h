@@ -61,4 +61,5 @@ private:
     // Internal thread for background reading
     std::thread reader_thread_;
     std::mutex read_mutex_;
+    std::mutex write_mutex_;
 };

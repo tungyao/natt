@@ -69,8 +69,9 @@ void IpAllocator::addPool(const std::string& network_id,
     }
 
     pool.base_addr = base;
-    pool.start_addr = base + 1;           // skip network address
+    pool.start_addr = base + 2;           // skip network address and gateway (.1)
     pool.end_addr = broadcastAddr(base, pool.prefix) - 1;  // skip broadcast
+    pool.allocated.insert(base + 1);
 
     // Mark reserved IPs as allocated
     for (const auto& ip : reserved) {
@@ -147,6 +148,13 @@ int IpAllocator::getPrefix(const std::string& network_id) const {
     auto it = pools_.find(network_id);
     if (it == pools_.end()) return 0;
     return it->second.prefix;
+}
+
+std::string IpAllocator::gatewayIp(const std::string& network_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = pools_.find(network_id);
+    if (it == pools_.end()) return {};
+    return uintToIp(it->second.base_addr + 1);
 }
 
 size_t IpAllocator::allocatedCount(const std::string& network_id) const {

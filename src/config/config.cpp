@@ -36,6 +36,15 @@ Config Config::load(const std::string& path) {
         if (l["pattern"]) cfg.logging.pattern = l["pattern"].as<std::string>();
     }
 
+    if (auto ipam = root["ipam"]) {
+        if (auto pools = ipam["pools"]) {
+            cfg.ipam.pools.clear();
+            for (auto it = pools.begin(); it != pools.end(); ++it) {
+                cfg.ipam.pools[it->first.as<std::string>()] = it->second.as<std::string>();
+            }
+        }
+    }
+
     return cfg;
 }
 
