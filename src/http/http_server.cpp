@@ -829,28 +829,28 @@ void HttpServer::handle_websocket_upgrade(tcp::socket&& socket,
                 }
             },
 
-            // Disconnect handler
+            // Disconnect handler — only remove session, keep node in registry.
+            // Node will be removed by HeartbeatMonitor if heartbeat times out.
+            // This allows clients to reconnect within the heartbeat window
+            // without losing their state.
             [this](const std::string& node_id) {
                 if (shutting_down_) return;
+                spdlog::info("WebSocket disconnected: node_id={} (waiting for heartbeat timeout)", node_id);
+                session_mgr_.removeSession(node_id);
+
+                // Broadcast updated peer list (node is still in registry but offline session)
                 auto node = node_registry_.findNode(node_id);
                 if (node.has_value()) {
-                    auto network_id = node->network_id;
-                    node_registry_.removeNode(node_id);
-                    session_mgr_.removeSession(node_id);
-                    device_svc_.set_offline(node_id);
-
-                    // Broadcast updated peer list to network peers
-                    auto peers = node_registry_.listNetworkNodes(network_id);
+                    auto peers = node_registry_.listNetworkNodes(node->network_id);
                     nlohmann::json peer_list = {{"type", "peer_list"}, {"peers", nlohmann::json::array()}};
                     for (const auto& p : peers) {
-                        peer_list["peers"].push_back(p.to_peer_json());
+                        if (p.node_id != node_id) {
+                            peer_list["peers"].push_back(p.to_peer_json());
+                        }
                     }
                     session_mgr_.broadcastIf(peer_list, [&](const std::string& id) {
-                        return node_registry_.isOnline(id);
+                        return id != node_id && node_registry_.isOnline(id);
                     });
-                } else {
-                    session_mgr_.removeSession(node_id);
-                    node_registry_.removeNode(node_id);
                 }
             },
 
