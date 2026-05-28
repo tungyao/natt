@@ -380,9 +380,10 @@ StunResult TestClient::queryStun(const std::string& stun_host, uint16_t stun_por
 void TestClient::on_punch_start(const nlohmann::json& data) {
     if (stopping_) return;
 
-    // If we already have a successful P2P connection, ignore duplicate punch_start
-    if (punch_success_.load()) {
-        spdlog::info("punch_start ignored: already connected via P2P");
+    // If we already have a successful P2P connection or are done punching,
+    // ignore duplicate punch_start
+    if (punch_success_.load() || punch_done_.load()) {
+        spdlog::info("punch_start ignored: already connected or punching in progress");
         return;
     }
 

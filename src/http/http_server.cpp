@@ -137,15 +137,22 @@ HttpServer::HttpServer(net::io_context& ioc,
 
             // Auto-connect: if this node has a valid public address, initiate
             // punch_start to all online peers in the same network that also have
-            // valid addresses. Use node_id ordering to avoid duplicate connections.
+            // valid addresses. Use node_id ordering to avoid duplicate connections:
+            // - If this node has the smaller node_id → this node initiates (outgoing)
+            // - If peer has the smaller node_id → peer should have initiated when it
+            //   joined, but this node wasn't online yet. So peer initiates now.
             if (node.has_value() && !public_ip.empty() && public_port != 0) {
                 auto peers = node_registry_.listNetworkNodes(node->network_id);
                 for (const auto& peer : peers) {
                     if (peer.node_id == node_id) continue;
                     if (peer.public_ip.empty() || peer.public_port == 0) continue;
-                    // Only the lexicographically smaller node initiates
                     if (node_id < peer.node_id) {
+                        // This node has smaller id → this node initiates
                         signal_punch_start(*node, peer);
+                    } else {
+                        // Peer has smaller id → peer should have initiated but
+                        // couldn't (this node wasn't online). Peer initiates now.
+                        signal_punch_start(peer, *node);
                     }
                 }
             }
