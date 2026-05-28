@@ -208,7 +208,7 @@ bool TestClient::run(const Options& opts) {
     // Step 5: Start reader thread to receive async messages (punch_start, etc.)
     ws_->setMessageCallback([this](const std::string& type, const nlohmann::json& data) {
         if (stopping_) return;
-        spdlog::info("WsClient reader: <- type={}", type);
+        spdlog::info("WsClient: <- type={}", type);
         try {
             if (type == "punch_start") {
                 on_punch_start(data);
@@ -223,7 +223,9 @@ bool TestClient::run(const Options& opts) {
             spdlog::error("Message handler error ({}): {}", type, e.what());
         }
     });
-    ws_->startReader();
+    // Use async I/O on puncher_ioc_ instead of a separate reader thread,
+    // to avoid concurrent read/write on the Beast WebSocket stream.
+    ws_->startAsync(puncher_ioc_);
 
     // Step 6: Send update_addr with STUN results + local addresses
     {
@@ -721,9 +723,12 @@ void TestClient::do_tun_read() {
         [this](boost::system::error_code ec, std::size_t len) {
             if (stopping_) return;
             if (ec) {
-                if (ec != boost::asio::error::operation_aborted) {
-                    spdlog::error("TUN bridge: read error: {}", ec.message());
+                if (ec == boost::asio::error::operation_aborted) {
+                    // May be transient, re-arm
+                    do_tun_read();
+                    return;
                 }
+                spdlog::error("TUN bridge: read error: {}", ec.message());
                 return;
             }
 

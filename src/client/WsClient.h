@@ -10,6 +10,7 @@
 #include <atomic>
 #include <thread>
 #include <mutex>
+#include <deque>
 
 namespace beast = boost::beast;
 namespace websocket = beast::websocket;
@@ -29,7 +30,7 @@ public:
     // Send a JSON message (synchronous, blocking)
     bool send(const nlohmann::json& msg);
 
-    // Receive next message (blocking, thread-safe via internal io_context)
+    // Receive next message (blocking, for init phase only)
     bool receive(nlohmann::json& msg, int timeout_ms = 5000);
 
     // Close connection
@@ -38,17 +39,19 @@ public:
     // Wait for the background reader to exit after close()
     void joinReader();
 
-    // Register message callback (called from reader thread)
+    // Register message callback (called from the async ioc thread)
     void setMessageCallback(MessageCallback cb) { msg_cb_ = std::move(cb); }
 
     // Check connection state
     bool isConnected() const { return connected_; }
 
-    // Start reader thread that calls the message callback
-    void startReader();
+    // Start async read/write loop on the given io_context.
+    // After this is called, send() uses async_write on ioc.
+    void startAsync(net::io_context& ioc);
 
 private:
-    void reader_thread_func();
+    void do_async_read();
+    void do_flush_queue();
 
     // Must outlive ws_, because Beast stream destruction touches io_context services.
     net::io_context ioc_;
@@ -58,8 +61,14 @@ private:
 
     MessageCallback msg_cb_;
 
-    // Internal thread for background reading
+    // Async mode (used after startAsync)
+    net::io_context* async_ioc_ = nullptr;
+    beast::flat_buffer read_buf_;
+    std::deque<std::string> write_queue_;
+    std::mutex queue_mutex_;
+    bool async_write_pending_ = false;
+
+    // Internal thread for background reading (legacy synchronous mode)
     std::thread reader_thread_;
-    std::mutex read_mutex_;
     std::mutex write_mutex_;
 };

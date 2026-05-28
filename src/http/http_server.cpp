@@ -288,9 +288,19 @@ void HttpServer::do_tun_read(const std::string& network_id) {
     state->tun->asyncRead(net::buffer(state->buffer),
         [this, network_id, state](boost::system::error_code ec, std::size_t len) {
             if (ec) {
-                if (ec != boost::asio::error::operation_aborted) {
-                    spdlog::warn("TUN gateway read error on {}: {}", network_id, ec.message());
+                if (ec == boost::asio::error::operation_aborted) {
+                    // TUN gateway closed (e.g. shutdown), don't restart
+                    return;
                 }
+                spdlog::warn("TUN gateway read error on {}: {}, retrying...",
+                             network_id, ec.message());
+                // Transient error — re-arm after a short delay
+                auto timer = std::make_shared<net::steady_timer>(ioc_);
+                timer->expires_after(std::chrono::milliseconds(100));
+                timer->async_wait(
+                    [this, network_id, timer](boost::system::error_code) {
+                        do_tun_read(network_id);
+                    });
                 return;
             }
 
