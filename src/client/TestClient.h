@@ -74,6 +74,10 @@ private:
     void send_relay_test_message();
     void schedule_relay_test_message();
 
+    // Heartbeat
+    void start_heartbeat();
+    void schedule_heartbeat();
+
     // ── TUN mode ──
     void on_virtual_ip_assigned(const nlohmann::json& data);
     void start_tun_bridge();
@@ -109,6 +113,9 @@ private:
     int64_t relay_seq_ = 0;
     bool relay_registered_{false};
     std::unique_ptr<net::steady_timer> relay_test_timer_;
+
+    // Heartbeat timer
+    std::unique_ptr<net::steady_timer> heartbeat_timer_;
 
     // TUN bridge state
     std::shared_ptr<TunInterface> tun_;

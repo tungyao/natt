@@ -43,6 +43,10 @@ void TestClient::stop() {
         relay_test_timer_->cancel();
     }
 
+    if (heartbeat_timer_) {
+        heartbeat_timer_->cancel();
+    }
+
     if (tun_) {
         tun_->close();
         tun_ready_ = false;
@@ -183,6 +187,9 @@ bool TestClient::run(const Options& opts) {
         }
         spdlog::info("Auth OK: node_id={}", resp.value("node_id", "?"));
     }
+
+    // Start heartbeat to keep connection alive
+    start_heartbeat();
 
     // Step 4: Receive peer_list (sent by server after auth)
     {
@@ -609,6 +616,27 @@ void TestClient::schedule_relay_test_message() {
         if (ec || stopping_) return;
         send_relay_test_message();
         schedule_relay_test_message();
+    });
+}
+
+// ── Heartbeat ──────────────────────────────────────────────
+
+void TestClient::start_heartbeat() {
+    ensure_io_thread();
+    heartbeat_timer_ = std::make_unique<net::steady_timer>(puncher_ioc_);
+    schedule_heartbeat();
+}
+
+void TestClient::schedule_heartbeat() {
+    if (stopping_ || !heartbeat_timer_ || !ws_ || !ws_->isConnected()) return;
+    heartbeat_timer_->expires_after(std::chrono::seconds(10));
+    heartbeat_timer_->async_wait([this](boost::system::error_code ec) {
+        if (ec || stopping_) return;
+        nlohmann::json hb = {{"type", "heartbeat"}};
+        if (ws_ && ws_->isConnected()) {
+            ws_->send(hb);
+        }
+        schedule_heartbeat();
     });
 }
 
