@@ -83,6 +83,7 @@ set(COMMON_LIBS
 
 if(WIN32)
     list(APPEND COMMON_LIBS ws2_32 iphlpapi mswsock)
+    add_compile_definitions(_WIN32_WINNT=0x0601)  # Windows 7+ for netioapi/ws2tcpip
 endif()
 
 # ── natmesh-server (with DB, yaml-cpp) ──────────────────────
