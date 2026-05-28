@@ -202,14 +202,18 @@ bool TestClient::run(const Options& opts) {
     ws_->setMessageCallback([this](const std::string& type, const nlohmann::json& data) {
         if (stopping_) return;
         spdlog::info("WsClient reader: <- type={}", type);
-        if (type == "punch_start") {
-            on_punch_start(data);
-        } else if (type == "virtual_ip_assigned") {
-            on_virtual_ip_assigned(data);
-        } else if (type == "tun_packet") {
-            relay_to_tun("server", data.value("payload", std::string()), 0);
-        } else if (type == "error") {
-            spdlog::error("Server error: {}", data.value("message", ""));
+        try {
+            if (type == "punch_start") {
+                on_punch_start(data);
+            } else if (type == "virtual_ip_assigned") {
+                on_virtual_ip_assigned(data);
+            } else if (type == "tun_packet") {
+                relay_to_tun("server", data.value("payload", std::string()), 0);
+            } else if (type == "error") {
+                spdlog::error("Server error: {}", data.value("message", ""));
+            }
+        } catch (const std::exception& e) {
+            spdlog::error("Message handler error ({}): {}", type, e.what());
         }
     });
     ws_->startReader();
@@ -376,6 +380,12 @@ StunResult TestClient::queryStun(const std::string& stun_host, uint16_t stun_por
 void TestClient::on_punch_start(const nlohmann::json& data) {
     if (stopping_) return;
 
+    // If we already have a successful P2P connection, ignore duplicate punch_start
+    if (punch_success_.load()) {
+        spdlog::info("punch_start ignored: already connected via P2P");
+        return;
+    }
+
     auto peer_node_id = data["peer_node_id"].get<std::string>();
     auto peer_public_ip = data["peer_public_ip"].get<std::string>();
     auto peer_public_port = static_cast<uint16_t>(data["peer_public_port"].get<int>());
@@ -408,10 +418,24 @@ void TestClient::on_punch_start(const nlohmann::json& data) {
         }
     }
 
-    // Create UdpPuncher — constructor just opens the socket, thread-safe
+    // Stop old puncher before creating a new one to avoid port conflicts.
+    // UdpPuncher::stop() closes the socket, freeing the bound port.
+    if (puncher_) {
+        puncher_->setPunchCallback(nullptr);
+        puncher_->stop();
+        puncher_.reset();
+    }
+
+    // Create UdpPuncher — constructor opens the UDP socket on bind_port
     auto bind_port = opts_.udp_port;
 
-    puncher_ = std::make_shared<UdpPuncher>(puncher_ioc_, bind_port);
+    try {
+        puncher_ = std::make_shared<UdpPuncher>(puncher_ioc_, bind_port);
+    } catch (const std::exception& e) {
+        spdlog::error("UdpPuncher bind failed (port {}): {}", bind_port, e.what());
+        return;
+    }
+
     puncher_->setPunchCallback([this](const PunchResult& r) {
         if (stopping_) return;
         on_punch_result(r);

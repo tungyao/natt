@@ -134,6 +134,21 @@ HttpServer::HttpServer(net::io_context& ioc,
                 spdlog::info("Sent virtual IP {} to node {} (gateway {}, subnet {})",
                              node->virtual_ip, node_id, node->gateway_ip, node->subnet);
             }
+
+            // Auto-connect: if this node has a valid public address, initiate
+            // punch_start to all online peers in the same network that also have
+            // valid addresses. Use node_id ordering to avoid duplicate connections.
+            if (node.has_value() && !public_ip.empty() && public_port != 0) {
+                auto peers = node_registry_.listNetworkNodes(node->network_id);
+                for (const auto& peer : peers) {
+                    if (peer.node_id == node_id) continue;
+                    if (peer.public_ip.empty() || peer.public_port == 0) continue;
+                    // Only the lexicographically smaller node initiates
+                    if (node_id < peer.node_id) {
+                        signal_punch_start(*node, peer);
+                    }
+                }
+            }
         }
     );
 
@@ -173,41 +188,7 @@ HttpServer::HttpServer(net::io_context& ioc,
                 return;
             }
 
-            // Send punch_start to requester (outgoing direction)
-            {
-                nlohmann::json punch_msg = {
-                    {"type", "punch_start"},
-                    {"direction", "outgoing"},
-                    {"peer_node_id", target_node->node_id},
-                    {"peer_public_ip", target_node->public_ip},
-                    {"peer_public_port", target_node->public_port},
-                    {"peer_local_addrs", nlohmann::json::array()},
-                    {"peer_public_key", target_node->public_key}
-                };
-                for (const auto& addr : target_node->local_addrs) {
-                    punch_msg["peer_local_addrs"].push_back(addr);
-                }
-                session->send_json(punch_msg.dump());
-            }
-
-            // Send punch_start to target (incoming direction)
-            auto target_session = session_mgr_.getSession(target_node_id);
-            if (target_session) {
-                nlohmann::json punch_msg = {
-                    {"type", "punch_start"},
-                    {"direction", "incoming"},
-                    {"peer_node_id", requester_node->node_id},
-                    {"peer_public_ip", requester_node->public_ip},
-                    {"peer_public_port", requester_node->public_port},
-                    {"peer_local_addrs", nlohmann::json::array()},
-                    {"peer_public_key", requester_node->public_key}
-                };
-                for (const auto& addr : requester_node->local_addrs) {
-                    punch_msg["peer_local_addrs"].push_back(addr);
-                }
-                target_session->send_json(punch_msg.dump());
-            }
-
+            signal_punch_start(*requester_node, *target_node);
             spdlog::info("NAT signaling: connect_peer {} → {}", node_id, target_node_id);
         }
     );
@@ -366,6 +347,47 @@ void HttpServer::handle_tun_packet(const std::string& node_id, const nlohmann::j
     }
 
     state->tun->write(packet);
+}
+
+void HttpServer::signal_punch_start(const NodeInfo& requester,
+                                    const NodeInfo& target) {
+    // Send punch_start to requester (outgoing direction)
+    auto req_session = session_mgr_.getSession(requester.node_id);
+    if (req_session) {
+        nlohmann::json out_msg = {
+            {"type", "punch_start"},
+            {"direction", "outgoing"},
+            {"peer_node_id", target.node_id},
+            {"peer_public_ip", target.public_ip},
+            {"peer_public_port", target.public_port},
+            {"peer_local_addrs", nlohmann::json::array()},
+            {"peer_public_key", target.public_key}
+        };
+        for (const auto& addr : target.local_addrs) {
+            out_msg["peer_local_addrs"].push_back(addr);
+        }
+        req_session->send_json(out_msg.dump());
+    }
+
+    // Send punch_start to target (incoming direction)
+    auto tgt_session = session_mgr_.getSession(target.node_id);
+    if (tgt_session) {
+        nlohmann::json in_msg = {
+            {"type", "punch_start"},
+            {"direction", "incoming"},
+            {"peer_node_id", requester.node_id},
+            {"peer_public_ip", requester.public_ip},
+            {"peer_public_port", requester.public_port},
+            {"peer_local_addrs", nlohmann::json::array()},
+            {"peer_public_key", requester.public_key}
+        };
+        for (const auto& addr : requester.local_addrs) {
+            in_msg["peer_local_addrs"].push_back(addr);
+        }
+        tgt_session->send_json(in_msg.dump());
+    }
+
+    spdlog::info("Auto punch_start: {} → {}", requester.node_id, target.node_id);
 }
 
 void HttpServer::start() {

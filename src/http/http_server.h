@@ -86,6 +86,10 @@ private:
     void forward_tun_packet(const std::string& network_id,
                             const std::vector<uint8_t>& packet);
 
+    // Auto-connect: send punch_start to a pair of nodes
+    void signal_punch_start(const NodeInfo& requester,
+                            const NodeInfo& target);
+
     net::io_context& ioc_;
     tcp::acceptor acceptor_;
     Config config_;
