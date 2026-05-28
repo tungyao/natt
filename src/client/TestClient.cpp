@@ -277,8 +277,10 @@ bool TestClient::run(const Options& opts) {
     // Step 8: Wait for punch_result (via on_punch_start -> on_punch_result)
     // The punch_done_ flag is set by on_punch_result callback
     // After that, relay mode may activate if configured.
-    // Timeout after 30 seconds (allows relay mode to complete)
+    // Timeout after 30 seconds only if we initiated a connection (--connect).
+    // If no connect target, wait indefinitely for incoming connections.
     auto wait_start = std::chrono::steady_clock::now();
+    bool has_connect_target = !opts.connect_node_id.empty();
     while (!punch_done_ && !stopping_) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         // If relay mode is active, punch_done_ stays true already
@@ -287,7 +289,8 @@ bool TestClient::run(const Options& opts) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
             continue;
         }
-        if (std::chrono::duration_cast<std::chrono::seconds>(
+        if (has_connect_target &&
+            std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::steady_clock::now() - wait_start).count() > 30) {
             spdlog::warn("Timeout waiting for P2P result");
             break;
@@ -307,6 +310,12 @@ bool TestClient::run(const Options& opts) {
                 break;
             }
         }
+    }
+
+    // If no connect target was specified, we're just waiting for incoming connections.
+    // A clean shutdown (Ctrl+C) is not a failure.
+    if (!has_connect_target) {
+        return punch_success_.load();
     }
 
     return !stopping_ && (punch_success_ || mode_.load() == ClientMode::RELAY);
