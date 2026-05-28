@@ -271,7 +271,7 @@ bool TestClient::run(const Options& opts) {
         while (!stopping_) {
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
         }
-        return false;
+        return punch_success_.load();
     }
 
     // Step 8: Wait for punch_result (via on_punch_start -> on_punch_result)
