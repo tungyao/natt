@@ -55,6 +55,18 @@ std::vector<NodeInfo> NodeRegistry::listNetworkNodes(const std::string& network_
     return result;
 }
 
+std::vector<NodeInfo> NodeRegistry::listAllNodes() const {
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    std::vector<NodeInfo> result;
+    result.reserve(nodes_.size());
+    for (const auto& [id, info] : nodes_) {
+        if (info.online) {
+            result.push_back(info);
+        }
+    }
+    return result;
+}
+
 void NodeRegistry::removeNode(const std::string& node_id) {
     std::unique_lock<std::shared_mutex> lock(mutex_);
     nodes_.erase(node_id);

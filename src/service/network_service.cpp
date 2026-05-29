@@ -1,4 +1,5 @@
 #include "service/network_service.h"
+#include <algorithm>
 #include <spdlog/spdlog.h>
 
 NetworkService::NetworkService(NetworkRepo& network_repo, DeviceRepo& device_repo, IpAllocator& ipam)
@@ -28,8 +29,45 @@ std::optional<Network> NetworkService::get_network(int64_t network_id) {
     return network_repo_.find_by_id(network_id);
 }
 
+std::optional<Network> NetworkService::find_user_network_by_name(int64_t owner_id, const std::string& name) {
+    auto networks = network_repo_.find_by_owner(owner_id);
+    auto it = std::find_if(networks.begin(), networks.end(), [&](const Network& network) {
+        return network.name == name;
+    });
+    if (it == networks.end()) {
+        return std::nullopt;
+    }
+    return *it;
+}
+
 std::vector<Network> NetworkService::list_user_networks(int64_t owner_id) {
     return network_repo_.find_by_owner(owner_id);
+}
+
+std::pair<std::string, int64_t> NetworkService::ensure_network(const std::string& name, int64_t owner_id) {
+    if (name.empty()) {
+        return {"Network name is required", 0};
+    }
+
+    auto existing = find_user_network_by_name(owner_id, name);
+    if (existing.has_value()) {
+        auto subnet = ipam_.getSubnet(name);
+        if (!subnet.empty() && existing->subnet != subnet) {
+            network_repo_.update_subnet(existing->id, subnet);
+        }
+        return {"", existing->id};
+    }
+
+    auto [err, network_id] = create_network(name, owner_id);
+    if (!err.empty()) {
+        return {err, 0};
+    }
+
+    auto subnet = ipam_.getSubnet(name);
+    if (!subnet.empty()) {
+        network_repo_.update_subnet(network_id, subnet);
+    }
+    return {"", network_id};
 }
 
 std::string NetworkService::join_network(int64_t network_id, const std::string& node_id) {

@@ -88,6 +88,7 @@ private:
     void handle_tun_packet(const std::string& node_id, const nlohmann::json& msg);
     void forward_tun_packet(const std::string& network_id,
                             const std::vector<uint8_t>& packet);
+    void ensure_node_auth_persisted(const NodeInfo& info);
 
     // Auto-connect: send punch_start to a pair of nodes
     void signal_punch_start(const NodeInfo& requester,

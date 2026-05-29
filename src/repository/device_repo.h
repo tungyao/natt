@@ -18,6 +18,10 @@ public:
     bool update_online_status(const std::string& node_id, bool online);
     bool update_heartbeat(const std::string& node_id);
     bool update_virtual_ip(const std::string& node_id, const std::string& virtual_ip);
+    bool update_identity(const std::string& node_id,
+                         const std::string& device_name,
+                         const std::string& public_key,
+                         int64_t user_id);
     bool remove(const std::string& node_id);
     std::vector<Device> find_offline_timeout(int timeout_sec);
 

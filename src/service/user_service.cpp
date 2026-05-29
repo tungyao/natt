@@ -205,6 +205,10 @@ std::string UserService::ensure_user(const std::string& username, const std::str
     return register_user(username, password);
 }
 
+std::optional<User> UserService::find_user_by_username(const std::string& username) {
+    return user_repo_.find_by_username(username);
+}
+
 std::optional<AuthResult> UserService::login(const std::string& username, const std::string& password) {
     auto user = user_repo_.find_by_username(username);
     if (!user.has_value()) {

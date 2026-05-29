@@ -18,11 +18,16 @@ public:
     std::optional<Device> get_device(const std::string& node_id);
     std::vector<Device> list_user_devices(int64_t user_id);
     bool delete_device(const std::string& node_id, int64_t user_id);
+    std::string ensure_device_for_user(const std::string& node_id,
+                                       int64_t user_id,
+                                       const std::string& device_name,
+                                       const std::string& public_key);
 
     void update_connection_info(const std::string& node_id,
                                  const std::string& public_ip, int public_port,
                                  const std::vector<std::string>& lan_ips);
     void update_heartbeat(const std::string& node_id);
+    void update_virtual_ip(const std::string& node_id, const std::string& virtual_ip);
     void set_offline(const std::string& node_id);
 
 private:

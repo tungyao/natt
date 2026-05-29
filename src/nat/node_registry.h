@@ -75,6 +75,9 @@ public:
     // List all online nodes in a network
     std::vector<NodeInfo> listNetworkNodes(const std::string& network_id) const;
 
+    // List all known online nodes
+    std::vector<NodeInfo> listAllNodes() const;
+
     // Remove a node (offline)
     void removeNode(const std::string& node_id);
 

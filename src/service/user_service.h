@@ -2,6 +2,7 @@
 
 #include "repository/user_repo.h"
 #include "auth/jwt.h"
+#include "model/user.h"
 #include <string>
 #include <optional>
 
@@ -18,6 +19,7 @@ public:
     // Returns error string or empty on success
     std::string register_user(const std::string& username, const std::string& password);
     std::string ensure_user(const std::string& username, const std::string& password);
+    std::optional<User> find_user_by_username(const std::string& username);
     std::optional<AuthResult> login(const std::string& username, const std::string& password);
 
 private:

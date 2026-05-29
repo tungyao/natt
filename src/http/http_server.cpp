@@ -253,9 +253,13 @@ const char* kAdminHtml = R"HTML(<!doctype html>
       const rows = [
         ["Node ID", d.node_id],
         ["Name", d.device_name || "-"],
+        ["Owner user", d.owner_user_id || "-"],
         ["Status", d.online ? "online" : "offline"],
+        ["Public key", d.public_key || "-"],
         ["Public", fmtPublic(d.public_ip, d.public_port)],
         ["Virtual", d.virtual_ip || "-"],
+        ["Gateway", data.runtime?.gateway_ip || "-"],
+        ["Subnet", data.runtime?.subnet || "-"],
         ["Last heartbeat", d.last_heartbeat || "-"],
         ["WS session", data.runtime?.ws_online ? "online" : "offline"],
         ["Registry state", data.runtime?.registry_online ? "online" : "offline"],
@@ -264,7 +268,8 @@ const char* kAdminHtml = R"HTML(<!doctype html>
       ];
       els.detailKv.innerHTML = rows.map(([k, v]) => `<div class="muted">${k}</div><div>${v}</div>`).join("");
       els.detailNetworks.innerHTML = (data.networks || []).map(n => chip(`${n.name} (${n.subnet || "-"})`)).join("") || chip("No networks");
-      els.detailLan.innerHTML = (d.lan_ips || []).map(chip).join("") || chip("No LAN addresses");
+      const lan = (d.lan_ips || []).length ? d.lan_ips : (data.runtime?.runtime_local_addrs || []);
+      els.detailLan.innerHTML = lan.map(chip).join("") || chip("No LAN addresses");
     }
 
     function logout() {
@@ -519,6 +524,45 @@ NodeInfo HttpServer::assign_virtual_ip(const std::string& node_id,
     info.online = true;
     info.last_seen = std::chrono::system_clock::now();
     return info;
+}
+
+void HttpServer::ensure_node_auth_persisted(const NodeInfo& info) {
+    if (!config_.admin.enabled) {
+        return;
+    }
+
+    auto admin_user = user_svc_.find_user_by_username(config_.admin.username);
+    if (!admin_user.has_value()) {
+        spdlog::warn("Node auth persistence skipped: bootstrap admin user '{}' not found",
+                     config_.admin.username);
+        return;
+    }
+
+    auto err = device_svc_.ensure_device_for_user(
+        info.node_id,
+        admin_user->id,
+        info.node_id,
+        info.public_key
+    );
+    if (!err.empty()) {
+        spdlog::warn("Failed to persist node-auth device {}: {}", info.node_id, err);
+        return;
+    }
+
+    device_svc_.update_virtual_ip(info.node_id, info.virtual_ip);
+    device_svc_.update_connection_info(info.node_id, info.public_ip, info.public_port, info.local_addrs);
+    device_svc_.update_heartbeat(info.node_id);
+
+    auto [network_err, network_id] = network_svc_.ensure_network(info.network_id, admin_user->id);
+    if (!network_err.empty()) {
+        spdlog::warn("Failed to persist node-auth network {}: {}", info.network_id, network_err);
+        return;
+    }
+
+    auto join_err = network_svc_.join_network(network_id, info.node_id);
+    if (!join_err.empty() && join_err != "Device already in network") {
+        spdlog::warn("Failed to attach node {} to network {}: {}", info.node_id, info.network_id, join_err);
+    }
 }
 
 bool HttpServer::ensure_tun_gateway(const std::string& network_id) {
@@ -1036,8 +1080,9 @@ http::response<http::string_body> HttpServer::handle_health(
 http::response<http::string_body> HttpServer::handle_admin_overview(
     const http::request<http::string_body>& req, int64_t user_id)
 {
-    auto devices = device_svc_.list_user_devices(user_id);
+    auto db_devices = device_svc_.list_user_devices(user_id);
     auto networks = network_svc_.list_user_networks(user_id);
+    auto runtime_nodes = node_registry_.listAllNodes();
 
     nlohmann::json device_networks = nlohmann::json::object();
     nlohmann::json network_devices = nlohmann::json::object();
@@ -1056,20 +1101,95 @@ http::response<http::string_body> HttpServer::handle_admin_overview(
     }
 
     nlohmann::json peers = nlohmann::json::array();
-    for (const auto& device : devices) {
-        auto node = node_registry_.findNode(device.node_id);
-        if (node.has_value() && session_mgr_.hasSession(device.node_id)) {
-            peers.push_back(node->to_peer_json());
+    for (const auto& node : runtime_nodes) {
+        if (session_mgr_.hasSession(node.node_id)) {
+            peers.push_back(node.to_peer_json());
+        }
+    }
+
+    std::unordered_map<std::string, Device> merged_devices;
+    for (const auto& device : db_devices) {
+        merged_devices[device.node_id] = device;
+    }
+    for (const auto& node : runtime_nodes) {
+        auto it = merged_devices.find(node.node_id);
+        if (it == merged_devices.end()) {
+            Device synthetic;
+            synthetic.node_id = node.node_id;
+            synthetic.device_name = node.node_id;
+            synthetic.public_key = node.public_key;
+            synthetic.public_ip = node.public_ip;
+            synthetic.public_port = node.public_port;
+            synthetic.lan_ips = node.local_addrs;
+            synthetic.virtual_ip = node.virtual_ip;
+            synthetic.online = session_mgr_.hasSession(node.node_id);
+            merged_devices[node.node_id] = std::move(synthetic);
+        } else {
+            it->second.online = it->second.online || session_mgr_.hasSession(node.node_id);
+            if (it->second.public_ip.empty()) it->second.public_ip = node.public_ip;
+            if (it->second.public_port == 0) it->second.public_port = node.public_port;
+            if (it->second.lan_ips.empty()) it->second.lan_ips = node.local_addrs;
+            if (it->second.virtual_ip.empty()) it->second.virtual_ip = node.virtual_ip;
+        }
+
+        if (!node.network_id.empty()) {
+            auto& memberships = device_networks[node.node_id];
+            bool exists = false;
+            for (const auto& item : memberships) {
+                if (item.value("name", std::string()) == node.network_id) {
+                    exists = true;
+                    break;
+                }
+            }
+            if (!exists) {
+                memberships.push_back({
+                    {"id", node.network_id},
+                    {"name", node.network_id},
+                    {"subnet", node.subnet}
+                });
+            }
+
+            auto& member_ids = network_devices[node.network_id];
+            bool member_exists = false;
+            for (const auto& item : member_ids) {
+                if (item.get<std::string>() == node.node_id) {
+                    member_exists = true;
+                    break;
+                }
+            }
+            if (!member_exists) {
+                member_ids.push_back(node.node_id);
+            }
         }
     }
 
     nlohmann::json device_arr = nlohmann::json::array();
-    for (const auto& device : devices) {
+    for (const auto& [_, device] : merged_devices) {
         device_arr.push_back(device.to_json());
     }
     nlohmann::json network_arr = nlohmann::json::array();
     for (const auto& network : networks) {
         network_arr.push_back(network.to_json());
+    }
+    for (const auto& node : runtime_nodes) {
+        if (node.network_id.empty()) continue;
+        bool exists = false;
+        for (const auto& network : network_arr) {
+            if (network.value("name", std::string()) == node.network_id) {
+                exists = true;
+                break;
+            }
+        }
+        if (!exists) {
+            network_arr.push_back({
+                {"id", node.network_id},
+                {"name", node.network_id},
+                {"subnet", node.subnet},
+                {"owner_id", 0},
+                {"created_at", ""},
+                {"updated_at", ""}
+            });
+        }
     }
 
     return make_json_response(http::status::ok, {
@@ -1091,10 +1211,11 @@ http::response<http::string_body> HttpServer::handle_admin_device_detail(
     const http::request<http::string_body>& req, const std::string& node_id, int64_t user_id)
 {
     auto device = device_svc_.get_device(node_id);
-    if (!device.has_value()) {
+    auto node = node_registry_.findNode(node_id);
+    if (!device.has_value() && !node.has_value()) {
         return make_error_response(http::status::not_found, "Device not found");
     }
-    if (device->user_id != user_id) {
+    if (device.has_value() && device->user_id != user_id) {
         return make_error_response(http::status::forbidden, "Not your device");
     }
 
@@ -1109,22 +1230,57 @@ http::response<http::string_body> HttpServer::handle_admin_device_detail(
             membership.push_back(network.to_json());
         }
     }
+    if (node.has_value()) {
+        bool has_membership = false;
+        for (const auto& item : membership) {
+            if (item.value("name", std::string()) == node->network_id) {
+                has_membership = true;
+                break;
+            }
+        }
+        if (!has_membership && !node->network_id.empty()) {
+            membership.push_back({
+                {"id", node->network_id},
+                {"name", node->network_id},
+                {"subnet", node->subnet},
+                {"owner_id", 0},
+                {"created_at", ""},
+                {"updated_at", ""}
+            });
+        }
+    }
+
+    Device detail_device;
+    if (device.has_value()) {
+        detail_device = *device;
+    } else {
+        detail_device.node_id = node->node_id;
+        detail_device.device_name = node->node_id;
+        detail_device.public_key = node->public_key;
+        detail_device.public_ip = node->public_ip;
+        detail_device.public_port = node->public_port;
+        detail_device.lan_ips = node->local_addrs;
+        detail_device.virtual_ip = node->virtual_ip;
+        detail_device.online = session_mgr_.hasSession(node_id);
+    }
 
     nlohmann::json runtime = {
         {"ws_online", session_mgr_.hasSession(node_id)}
     };
-    auto node = node_registry_.findNode(node_id);
     if (node.has_value()) {
         runtime["registry_online"] = node->online;
+        runtime["runtime_public_key"] = node->public_key;
         runtime["runtime_public_ip"] = node->public_ip;
         runtime["runtime_public_port"] = node->public_port;
         runtime["runtime_virtual_ip"] = node->virtual_ip;
         runtime["runtime_network_id"] = node->network_id;
         runtime["runtime_local_addrs"] = node->local_addrs;
+        runtime["gateway_ip"] = node->gateway_ip;
+        runtime["subnet"] = node->subnet;
     }
 
     return make_json_response(http::status::ok, {
-        {"device", device->to_json()},
+        {"device", detail_device.to_json()},
         {"networks", membership},
         {"runtime", runtime}
     });
@@ -1150,6 +1306,7 @@ void HttpServer::handle_websocket_upgrade(tcp::socket&& socket,
                    const std::string& network_id,
                    const std::string& public_key) -> beast_ws::AuthResult {
                 auto info = assign_virtual_ip(node_id, network_id, public_key);
+                ensure_node_auth_persisted(info);
                 node_registry_.registerNode(info);
                 ensure_tun_gateway(info.network_id);
 

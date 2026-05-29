@@ -22,6 +22,7 @@ struct Device {
     nlohmann::json to_json() const {
         return {
             {"node_id", node_id},
+            {"owner_user_id", user_id},
             {"device_name", device_name},
             {"public_key", public_key},
             {"public_ip", public_ip},

@@ -35,6 +35,33 @@ std::vector<Device> DeviceService::list_user_devices(int64_t user_id) {
     return device_repo_.find_by_user_id(user_id);
 }
 
+std::string DeviceService::ensure_device_for_user(const std::string& node_id,
+                                                  int64_t user_id,
+                                                  const std::string& device_name,
+                                                  const std::string& public_key) {
+    auto existing = device_repo_.find_by_node_id(node_id);
+    if (!existing.has_value()) {
+        Device device;
+        device.node_id = node_id;
+        device.user_id = user_id;
+        device.device_name = device_name.empty() ? node_id : device_name;
+        device.public_key = public_key;
+        if (!device_repo_.create(device)) {
+            return "Failed to create device";
+        }
+        return "";
+    }
+
+    if (!device_repo_.update_identity(
+            node_id,
+            device_name.empty() ? existing->device_name : device_name,
+            public_key.empty() ? existing->public_key : public_key,
+            user_id)) {
+        return "Failed to update device identity";
+    }
+    return "";
+}
+
 bool DeviceService::delete_device(const std::string& node_id, int64_t user_id) {
     auto device = device_repo_.find_by_node_id(node_id);
     if (!device.has_value()) return false;
@@ -55,6 +82,10 @@ void DeviceService::update_connection_info(const std::string& node_id,
 
 void DeviceService::update_heartbeat(const std::string& node_id) {
     device_repo_.update_heartbeat(node_id);
+}
+
+void DeviceService::update_virtual_ip(const std::string& node_id, const std::string& virtual_ip) {
+    device_repo_.update_virtual_ip(node_id, virtual_ip);
 }
 
 void DeviceService::set_offline(const std::string& node_id) {

@@ -16,7 +16,9 @@ public:
     // Returns (error, network_id) — network_id 0 on error
     std::pair<std::string, int64_t> create_network(const std::string& name, int64_t owner_id);
     std::optional<Network> get_network(int64_t network_id);
+    std::optional<Network> find_user_network_by_name(int64_t owner_id, const std::string& name);
     std::vector<Network> list_user_networks(int64_t owner_id);
+    std::pair<std::string, int64_t> ensure_network(const std::string& name, int64_t owner_id);
 
     std::string join_network(int64_t network_id, const std::string& node_id);
     std::string leave_network(int64_t network_id, const std::string& node_id);
