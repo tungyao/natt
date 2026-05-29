@@ -1,6 +1,8 @@
 #include "stun/StunServer.h"
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
+#include <algorithm>
+#include <cctype>
 #include <utility>
 
 StunServer::StunServer(net::io_context& ioc,
@@ -42,8 +44,26 @@ void StunServer::handle_receive(boost::system::error_code ec, std::size_t bytes_
         return;
     }
 
+    std::string_view data(recv_buffer_.data(), bytes_recvd);
+    const auto first_non_ws = std::find_if_not(data.begin(), data.end(), [](unsigned char ch) {
+        return std::isspace(ch) != 0;
+    });
+
+    if (first_non_ws == data.end()) {
+        spdlog::debug("STUN ignoring empty datagram from {}:{}",
+                      remote_.address().to_string(), remote_.port());
+        do_receive();
+        return;
+    }
+
+    if (*first_non_ws != '{') {
+        spdlog::debug("STUN ignoring non-JSON datagram from {}:{}",
+                      remote_.address().to_string(), remote_.port());
+        do_receive();
+        return;
+    }
+
     try {
-        std::string_view data(recv_buffer_.data(), bytes_recvd);
         auto json = nlohmann::json::parse(data);
         auto type = json["type"].get<std::string>();
 
@@ -51,10 +71,12 @@ void StunServer::handle_receive(boost::system::error_code ec, std::size_t bytes_
             auto node_id = json.value("node_id", std::string());
             send_response(remote_, node_id);
         } else {
-            spdlog::warn("STUN unknown type: {}", type);
+            spdlog::debug("STUN ignoring unsupported type '{}' from {}:{}",
+                          type, remote_.address().to_string(), remote_.port());
         }
     } catch (const std::exception& e) {
-        spdlog::warn("STUN invalid message: {}", e.what());
+        spdlog::debug("STUN ignoring invalid JSON datagram from {}:{}: {}",
+                      remote_.address().to_string(), remote_.port(), e.what());
     }
 
     do_receive();
