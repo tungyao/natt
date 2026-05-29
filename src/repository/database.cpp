@@ -92,6 +92,11 @@ bool Database::initialize() {
         CREATE INDEX IF NOT EXISTS idx_network_devices_device ON network_devices(device_id);
     )";
 
+    if (!execute(schema)) {
+        spdlog::error("Failed to initialize database schema");
+        return false;
+    }
+
     // Run migrations for new columns (idempotent ALTER TABLE ADD COLUMN)
     auto migrate = [&](const std::string& sql) {
         char* err = nullptr;

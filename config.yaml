@@ -26,3 +26,8 @@ ipam:
 logging:
   level: "info"  # trace, debug, info, warn, error, critical
   pattern: "[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] [%s:%#] %v"
+
+admin:
+  enabled: true
+  username: "admin"
+  password: "admin123456"

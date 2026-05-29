@@ -17,6 +17,7 @@ public:
 
     // Returns error string or empty on success
     std::string register_user(const std::string& username, const std::string& password);
+    std::string ensure_user(const std::string& username, const std::string& password);
     std::optional<AuthResult> login(const std::string& username, const std::string& password);
 
 private:

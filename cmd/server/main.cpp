@@ -95,6 +95,16 @@ int main(int argc, char* argv[]) {
         auto network_svc = std::make_unique<NetworkService>(*network_repo, *device_repo, *ipam);
         auto peer_mgr = std::make_unique<PeerManager>();
 
+        if (config.admin.enabled) {
+            auto err = user_svc->ensure_user(config.admin.username, config.admin.password);
+            if (!err.empty()) {
+                spdlog::error("Failed to ensure bootstrap admin user '{}': {}",
+                              config.admin.username, err);
+                return 1;
+            }
+            spdlog::info("Bootstrap admin user ready: username={}", config.admin.username);
+        }
+
         // ── IO Context ──
         net::io_context ioc(config.server.workers);
         g_ioc = &ioc;

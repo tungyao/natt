@@ -36,6 +36,12 @@ Config Config::load(const std::string& path) {
         if (l["pattern"]) cfg.logging.pattern = l["pattern"].as<std::string>();
     }
 
+    if (auto a = root["admin"]) {
+        if (a["enabled"]) cfg.admin.enabled = a["enabled"].as<bool>();
+        if (a["username"]) cfg.admin.username = a["username"].as<std::string>();
+        if (a["password"]) cfg.admin.password = a["password"].as<std::string>();
+    }
+
     if (auto ipam = root["ipam"]) {
         if (auto pools = ipam["pools"]) {
             cfg.ipam.pools.clear();

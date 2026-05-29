@@ -197,6 +197,14 @@ std::string UserService::register_user(const std::string& username, const std::s
     return ""; // success
 }
 
+std::string UserService::ensure_user(const std::string& username, const std::string& password) {
+    auto existing = user_repo_.find_by_username(username);
+    if (existing.has_value()) {
+        return "";
+    }
+    return register_user(username, password);
+}
+
 std::optional<AuthResult> UserService::login(const std::string& username, const std::string& password) {
     auto user = user_repo_.find_by_username(username);
     if (!user.has_value()) {

@@ -29,6 +29,12 @@ struct LogConfig {
     std::string pattern = "[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] [%s:%#] %v";
 };
 
+struct AdminConfig {
+    bool enabled = true;
+    std::string username = "admin";
+    std::string password = "admin123456";
+};
+
 struct IpamConfig {
     std::map<std::string, std::string> pools = {
         {"home", "10.0.0.0/16"},
@@ -42,6 +48,7 @@ struct Config {
     JwtConfig jwt;
     WebSocketConfig websocket;
     LogConfig logging;
+    AdminConfig admin;
     IpamConfig ipam;
 
     static Config load(const std::string& path);
