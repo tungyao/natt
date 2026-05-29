@@ -81,8 +81,187 @@ void TestClient::ensure_io_thread() {
     });
 }
 
+bool TestClient::connect_control_channel(bool reconnecting) {
+    if (stopping_) return false;
+
+    if (ws_) {
+        ws_->setMessageCallback(nullptr);
+        ws_->close();
+        ws_->joinReader();
+        ws_.reset();
+    }
+
+    auto ws = std::make_shared<WsClient>();
+    if (!ws->connect(ctrl_host_, ctrl_port_, ctrl_path_)) {
+        return false;
+    }
+
+    nlohmann::json auth_msg = {
+        {"type", "auth"},
+        {"node_id", opts_.node_id},
+        {"network_id", opts_.network_id},
+        {"public_key", opts_.public_key}
+    };
+    if (!ws->send(auth_msg)) {
+        spdlog::error("Failed to send auth");
+        ws->close();
+        ws->joinReader();
+        return false;
+    }
+
+    nlohmann::json resp;
+    if (!ws->receive(resp, 5000)) {
+        spdlog::error("No auth response from server");
+        ws->close();
+        ws->joinReader();
+        return false;
+    }
+    if (resp["type"] != "auth_ok") {
+        spdlog::error("Auth failed: {}", resp.dump());
+        ws->close();
+        ws->joinReader();
+        return false;
+    }
+
+    spdlog::info("{}Auth OK: node_id={}",
+                 reconnecting ? "Reconnected. " : "",
+                 resp.value("node_id", "?"));
+
+    nlohmann::json peer_list;
+    if (ws->receive(peer_list, 3000) && peer_list["type"] == "peer_list") {
+        log_peer_list(peer_list);
+    }
+
+    install_ws_callbacks(ws);
+    ws->startAsync(puncher_ioc_);
+    ws_ = ws;
+
+    if (!send_update_addr()) {
+        spdlog::error("Failed to send update_addr after {}",
+                      reconnecting ? "reconnect" : "connect");
+        ws_->close();
+        ws_->joinReader();
+        ws_.reset();
+        return false;
+    }
+
+    if (!punch_done_ && !opts_.connect_node_id.empty()) {
+        if (!send_connect_peer_request()) {
+            spdlog::warn("Failed to resend connect_peer after reconnect");
+        }
+    }
+
+    start_heartbeat();
+    return true;
+}
+
+bool TestClient::send_update_addr() {
+    if (!ws_ || !ws_->isConnected()) return false;
+
+    std::vector<std::string> local_addrs;
+    if (!opts_.local_addr.empty()) {
+        std::stringstream ss(opts_.local_addr);
+        std::string addr;
+        while (std::getline(ss, addr, ',')) {
+            local_addrs.push_back(addr);
+        }
+    }
+
+    std::string local_addr_str = "127.0.0.1:" + std::to_string(opts_.udp_port);
+    if (local_addrs.empty()) {
+        local_addrs.push_back(local_addr_str);
+    }
+
+    nlohmann::json update = {
+        {"type", "update_addr"},
+        {"public_ip", stun_result_.public_ip},
+        {"public_port", static_cast<int>(stun_result_.public_port)},
+        {"local_addrs", nlohmann::json::array()}
+    };
+    for (const auto& addr : local_addrs) {
+        update["local_addrs"].push_back(addr);
+    }
+
+    if (!ws_->send(update)) {
+        return false;
+    }
+
+    spdlog::info("Sent update_addr: public={}:{}",
+                 update["public_ip"].get<std::string>(),
+                 update["public_port"].get<int>());
+    return true;
+}
+
+bool TestClient::send_connect_peer_request() {
+    if (!ws_ || !ws_->isConnected() || opts_.connect_node_id.empty()) return false;
+
+    nlohmann::json connect = {
+        {"type", "connect_peer"},
+        {"target_node_id", opts_.connect_node_id}
+    };
+    if (!ws_->send(connect)) {
+        return false;
+    }
+
+    spdlog::info("Sent connect_peer -> {}", opts_.connect_node_id);
+    return true;
+}
+
+void TestClient::install_ws_callbacks(const std::shared_ptr<WsClient>& ws) {
+    ws->setMessageCallback([this](const std::string& type, const nlohmann::json& data) {
+        if (stopping_) return;
+        spdlog::info("WsClient: <- type={}", type);
+        try {
+            if (type == "punch_start") {
+                on_punch_start(data);
+            } else if (type == "virtual_ip_assigned") {
+                on_virtual_ip_assigned(data);
+            } else if (type == "tun_packet") {
+                relay_to_tun("server", data.value("payload", std::string()), 0);
+            } else if (type == "peer_list") {
+                log_peer_list(data);
+            } else if (type == "error") {
+                spdlog::error("Server error: {}", data.value("message", ""));
+            }
+        } catch (const std::exception& e) {
+            spdlog::error("Message handler error ({}): {}", type, e.what());
+        }
+    });
+}
+
+void TestClient::log_peer_list(const nlohmann::json& peer_list) const {
+    if (!peer_list.contains("peers")) return;
+
+    spdlog::info("Peer list: {} peers online", peer_list["peers"].size());
+    for (const auto& p : peer_list["peers"]) {
+        spdlog::info("  peer: node_id={}, ip={}:{}",
+                     p.value("node_id", "?"),
+                     p.value("public_ip", "?"),
+                     p.value("public_port", 0));
+    }
+}
+
+void TestClient::maintain_control_connection() {
+    if (stopping_) return;
+    if (ws_ && ws_->isConnected()) return;
+
+    auto now = std::chrono::steady_clock::now();
+    if (now < next_reconnect_attempt_) return;
+
+    next_reconnect_attempt_ = now + std::chrono::seconds(3);
+    spdlog::warn("Control connection lost, reconnecting to {}:{}...",
+                 ctrl_host_, ctrl_port_);
+
+    if (connect_control_channel(true)) {
+        spdlog::info("Control connection restored");
+    } else {
+        spdlog::warn("Control reconnect failed, will retry");
+    }
+}
+
 bool TestClient::run(const Options& opts) {
     opts_ = opts;
+    next_reconnect_attempt_ = std::chrono::steady_clock::now();
 
     spdlog::info("═══════════════════════════════════════════");
     spdlog::info("  TestClient starting");
@@ -129,155 +308,49 @@ bool TestClient::run(const Options& opts) {
     }
 
     // Step 2: Connect to control server via WebSocket (synchronous)
-    ws_ = std::make_shared<WsClient>();
-
     // Parse control URL
     auto ctrl = opts.control_url;
-    std::string ctrl_host = ctrl;
-    std::string ctrl_port = "8080";
+    ctrl_host_ = ctrl;
+    ctrl_port_ = "8080";
     auto colon = ctrl.rfind(':');
     if (colon != std::string::npos) {
-        ctrl_port = ctrl.substr(colon + 1);
-        ctrl_host = ctrl.substr(0, colon);
+        ctrl_port_ = ctrl.substr(colon + 1);
+        ctrl_host_ = ctrl.substr(0, colon);
     }
     // Strip ws:// prefix
-    if (ctrl_host.rfind("ws://", 0) == 0) {
-        ctrl_host = ctrl_host.substr(5);
-        auto slash = ctrl_host.find('/');
+    if (ctrl_host_.rfind("ws://", 0) == 0) {
+        ctrl_host_ = ctrl_host_.substr(5);
+        auto slash = ctrl_host_.find('/');
         if (slash != std::string::npos) {
-            auto host_part = ctrl_host.substr(0, slash);
+            ctrl_path_ = ctrl_host_.substr(slash);
+            auto host_part = ctrl_host_.substr(0, slash);
             auto port_colon = host_part.rfind(':');
             if (port_colon != std::string::npos) {
-                ctrl_port = host_part.substr(port_colon + 1);
-                ctrl_host = host_part.substr(0, port_colon);
+                ctrl_port_ = host_part.substr(port_colon + 1);
+                ctrl_host_ = host_part.substr(0, port_colon);
             } else {
-                ctrl_host = host_part;
+                ctrl_host_ = host_part;
             }
         }
     }
-
-    if (!ws_->connect(ctrl_host, ctrl_port)) {
+    if (!connect_control_channel(false)) {
         spdlog::error("Failed to connect to control server");
         return false;
-    }
-
-    // Step 3: Auth (synchronous)
-    {
-        nlohmann::json auth_msg = {
-            {"type", "auth"},
-            {"node_id", opts.node_id},
-            {"network_id", opts.network_id},
-            {"public_key", opts.public_key}
-        };
-        if (!ws_->send(auth_msg)) {
-            spdlog::error("Failed to send auth");
-            return false;
-        }
-        spdlog::info("Sent auth: node_id={}, network_id={}", opts.node_id, opts.network_id);
-
-        // Wait for auth_ok
-        nlohmann::json resp;
-        if (!ws_->receive(resp, 5000)) {
-            spdlog::error("No auth response from server");
-            return false;
-        }
-        if (resp["type"] != "auth_ok") {
-            spdlog::error("Auth failed: {}", resp.dump());
-            return false;
-        }
-        spdlog::info("Auth OK: node_id={}", resp.value("node_id", "?"));
-    }
-
-    // Start heartbeat to keep connection alive
-    start_heartbeat();
-
-    // Step 4: Receive peer_list (sent by server after auth)
-    {
-        nlohmann::json peer_list;
-        if (ws_->receive(peer_list, 3000) && peer_list["type"] == "peer_list") {
-            spdlog::info("Peer list: {} peers online", peer_list["peers"].size());
-            for (const auto& p : peer_list["peers"]) {
-                spdlog::info("  peer: node_id={}, ip={}:{}",
-                             p.value("node_id", "?"),
-                             p.value("public_ip", "?"),
-                             p.value("public_port", 0));
-            }
-        }
-    }
-
-    // Step 5: Start reader thread to receive async messages (punch_start, etc.)
-    ws_->setMessageCallback([this](const std::string& type, const nlohmann::json& data) {
-        if (stopping_) return;
-        spdlog::info("WsClient: <- type={}", type);
-        try {
-            if (type == "punch_start") {
-                on_punch_start(data);
-            } else if (type == "virtual_ip_assigned") {
-                on_virtual_ip_assigned(data);
-            } else if (type == "tun_packet") {
-                relay_to_tun("server", data.value("payload", std::string()), 0);
-            } else if (type == "error") {
-                spdlog::error("Server error: {}", data.value("message", ""));
-            }
-        } catch (const std::exception& e) {
-            spdlog::error("Message handler error ({}): {}", type, e.what());
-        }
-    });
-    // Use async I/O on puncher_ioc_ instead of a separate reader thread,
-    // to avoid concurrent read/write on the Beast WebSocket stream.
-    ws_->startAsync(puncher_ioc_);
-
-    // Step 6: Send update_addr with STUN results + local addresses
-    {
-        std::vector<std::string> local_addrs;
-        if (!opts.local_addr.empty()) {
-            std::stringstream ss(opts.local_addr);
-            std::string addr;
-            while (std::getline(ss, addr, ',')) {
-                local_addrs.push_back(addr);
-            }
-        }
-        std::string local_addr_str = "127.0.0.1:" + std::to_string(opts.udp_port);
-        if (local_addrs.empty()) {
-            local_addrs.push_back(local_addr_str);
-        }
-
-        nlohmann::json update = {
-            {"type", "update_addr"},
-            {"public_ip", stun_result_.public_ip},
-            {"public_port", static_cast<int>(stun_result_.public_port)},
-            {"local_addrs", nlohmann::json::array()}
-        };
-        for (const auto& addr : local_addrs) {
-            update["local_addrs"].push_back(addr);
-        }
-        if (!ws_->send(update)) {
-            spdlog::error("Failed to send update_addr");
-            return false;
-        }
-        spdlog::info("Sent update_addr: public={}:{}",
-                     update["public_ip"].get<std::string>(),
-                     update["public_port"].get<int>());
     }
 
     // Step 7: If we have a target to connect, send connect_peer
     if (!opts.connect_node_id.empty()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
-
-        nlohmann::json connect = {
-            {"type", "connect_peer"},
-            {"target_node_id", opts.connect_node_id}
-        };
-        if (!ws_->send(connect)) {
+        if (!send_connect_peer_request()) {
             spdlog::error("Failed to send connect_peer");
             return false;
         }
-        spdlog::info("Sent connect_peer -> {}", opts.connect_node_id);
     }
 
     if (opts.enable_tun && opts.connect_node_id.empty()) {
         spdlog::info("TUN mode active — connected to server gateway, waiting for traffic...");
         while (!stopping_) {
+            maintain_control_connection();
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
         }
         return punch_success_.load();
@@ -291,6 +364,7 @@ bool TestClient::run(const Options& opts) {
     auto wait_start = std::chrono::steady_clock::now();
     bool has_connect_target = !opts.connect_node_id.empty();
     while (!punch_done_ && !stopping_) {
+        maintain_control_connection();
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         // If relay mode is active, punch_done_ stays true already
         if (mode_.load() == ClientMode::RELAY) {
@@ -311,6 +385,7 @@ bool TestClient::run(const Options& opts) {
         spdlog::info("Relay mode active — waiting for relay messages (30s timeout)...");
         auto relay_start = std::chrono::steady_clock::now();
         while (!stopping_) {
+            maintain_control_connection();
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::steady_clock::now() - relay_start).count();
@@ -625,6 +700,9 @@ void TestClient::schedule_relay_test_message() {
 
 void TestClient::start_heartbeat() {
     ensure_io_thread();
+    if (heartbeat_timer_) {
+        heartbeat_timer_->cancel();
+    }
     heartbeat_timer_ = std::make_unique<net::steady_timer>(puncher_ioc_);
     schedule_heartbeat();
 }

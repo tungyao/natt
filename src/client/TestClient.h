@@ -6,6 +6,7 @@
 #include <atomic>
 #include <thread>
 #include <vector>
+#include <chrono>
 #include "client/WsClient.h"
 #include "client/UdpPuncher.h"
 #include "tun/TunInterface.h"
@@ -77,6 +78,14 @@ private:
     // Heartbeat
     void start_heartbeat();
     void schedule_heartbeat();
+    void maintain_control_connection();
+
+    // Control channel
+    bool connect_control_channel(bool reconnecting);
+    bool send_update_addr();
+    bool send_connect_peer_request();
+    void install_ws_callbacks(const std::shared_ptr<WsClient>& ws);
+    void log_peer_list(const nlohmann::json& peer_list) const;
 
     // ── TUN mode ──
     void on_virtual_ip_assigned(const nlohmann::json& data);
@@ -94,6 +103,10 @@ private:
 
     Options opts_;
     StunResult stun_result_;
+    std::string ctrl_host_;
+    std::string ctrl_port_ = "8080";
+    std::string ctrl_path_ = "/api/v1/ws/nat";
+    std::chrono::steady_clock::time_point next_reconnect_attempt_{};
 
     std::atomic<bool> punch_success_{false};
     std::atomic<bool> punch_done_{false};
