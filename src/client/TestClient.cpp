@@ -56,6 +56,7 @@ void TestClient::stop() {
     if (puncher_) {
         puncher_->setPunchCallback(nullptr);
         puncher_->setPacketCallback(nullptr);
+        puncher_->setPeerPacketCallback(nullptr);
         puncher_->setRelayPacketCallback(nullptr);
         puncher_->setRelayEventCallback(nullptr);
         puncher_->stop();
@@ -534,6 +535,12 @@ void TestClient::on_punch_start(const nlohmann::json& data) {
         if (stopping_) return;
         on_punch_result(r);
     });
+    puncher_->setPeerPacketCallback([this](const std::string& from,
+                                           const std::string& payload,
+                                           int64_t seq) {
+        if (stopping_) return;
+        relay_to_tun(from, payload, seq);
+    });
 
     // Post ALL puncher operations first, then start the thread.
     // This ensures work is already queued when puncher_ioc_.run() starts.
@@ -828,6 +835,14 @@ void TestClient::do_tun_read() {
 
 void TestClient::send_tun_packet_to_server(const std::vector<uint8_t>& packet) {
     if (stopping_ || !ws_ || packet.empty()) return;
+
+    if (mode_.load() == ClientMode::P2P && puncher_ && !peer_node_id_.empty()) {
+        ++relay_seq_;
+        if (puncher_->sendPeerPacket(opts_.node_id, peer_node_id_, relay_seq_, hex_encode(packet))) {
+            return;
+        }
+        spdlog::warn("TUN bridge: direct P2P send failed, falling back to server");
+    }
 
     nlohmann::json msg = {
         {"type", "tun_packet"},

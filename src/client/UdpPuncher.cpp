@@ -33,6 +33,7 @@ void UdpPuncher::stop() {
     punch_timer_.cancel();
     timeout_timer_.cancel();
     relay_hb_timer_.cancel();
+    peer_endpoint_known_ = false;
     socket_.close(ec);
 }
 
@@ -49,6 +50,8 @@ void UdpPuncher::startPunching(const std::string& my_node_id,
     target_node_id_ = target_node_id;
     interval_ms_ = interval_ms;
     punching_ = true;
+    success_ = false;
+    peer_endpoint_known_ = false;
     start_time_ms_ = now_ms();
 
     spdlog::info("UdpPuncher: start punching -> node_id={}, {} targets, {}ms timeout",
@@ -154,6 +157,11 @@ void UdpPuncher::handle_receive(boost::system::error_code ec, std::size_t bytes_
                          remote_.address().to_string(),
                          remote_.port());
 
+            if (from_node_id == target_node_id_) {
+                peer_endpoint_ = remote_;
+                peer_endpoint_known_ = true;
+            }
+
             sendAck(my_node_id_, from_node_id, remote_);
             spdlog::info("UdpPuncher: -> ack to {} at {}:{}",
                          from_node_id,
@@ -165,6 +173,8 @@ void UdpPuncher::handle_receive(boost::system::error_code ec, std::size_t bytes_
             if (!success_.exchange(true)) {
                 ack_time_ms_ = now_ms();
                 auto rtt = ack_time_ms_ - start_time_ms_;
+                peer_endpoint_ = remote_;
+                peer_endpoint_known_ = true;
                 spdlog::info("═══════════════════════════════════════════");
                 spdlog::info("  P2P SUCCESS with node_id={}", from_node_id);
                 spdlog::info("  Remote addr: {}:{}",
@@ -185,6 +195,20 @@ void UdpPuncher::handle_receive(boost::system::error_code ec, std::size_t bytes_
                     r.rtt_ms = rtt;
                     punch_cb_(r);
                 }
+            }
+
+        } else if (type == "p2p_packet") {
+            auto from_id = json.value("from_node_id", std::string());
+            auto payload = json.value("payload", std::string());
+            auto seq = json.value("seq", int64_t(0));
+
+            if (from_id == target_node_id_) {
+                peer_endpoint_ = remote_;
+                peer_endpoint_known_ = true;
+            }
+
+            if (peer_packet_cb_) {
+                peer_packet_cb_(from_id, payload, seq);
             }
 
         } else if (type == "relay_packet") {
@@ -219,6 +243,40 @@ void UdpPuncher::handle_receive(boost::system::error_code ec, std::size_t bytes_
     }
 
     do_receive();
+}
+
+bool UdpPuncher::sendPeerPacket(const std::string& from_node_id,
+                                const std::string& to_node_id,
+                                int64_t seq,
+                                const std::string& payload_data) {
+    if (!success_ || !peer_endpoint_known_) {
+        return false;
+    }
+
+    nlohmann::json msg = {
+        {"type", "p2p_packet"},
+        {"from_node_id", from_node_id},
+        {"to_node_id", to_node_id},
+        {"seq", seq},
+        {"payload", payload_data}
+    };
+    auto payload = msg.dump();
+
+    boost::system::error_code ec;
+    socket_.send_to(net::buffer(payload), peer_endpoint_, 0, ec);
+    if (ec) {
+        spdlog::error("UdpPuncher: send p2p_packet error to {}:{}: {}",
+                      peer_endpoint_.address().to_string(),
+                      peer_endpoint_.port(),
+                      ec.message());
+        return false;
+    }
+
+    spdlog::debug("UdpPuncher: -> p2p_packet seq={} to {}:{}",
+                  seq,
+                  peer_endpoint_.address().to_string(),
+                  peer_endpoint_.port());
+    return true;
 }
 
 void UdpPuncher::do_send_punch() {

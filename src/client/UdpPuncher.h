@@ -31,6 +31,9 @@ public:
                                                const std::string& type,
                                                int64_t timestamp,
                                                const udp::endpoint& sender)>;
+    using PeerPacketCallback = std::function<void(const std::string& from_node_id,
+                                                  const std::string& payload,
+                                                  int64_t seq)>;
 
     UdpPuncher(net::io_context& ioc, uint16_t bind_port);
     ~UdpPuncher();
@@ -72,6 +75,14 @@ public:
 
     // Check if P2P was successful
     bool isSuccess() const { return success_; }
+
+    // Send a direct peer packet over the punched UDP path
+    bool sendPeerPacket(const std::string& from_node_id,
+                        const std::string& to_node_id,
+                        int64_t seq,
+                        const std::string& payload);
+
+    void setPeerPacketCallback(PeerPacketCallback cb) { peer_packet_cb_ = std::move(cb); }
 
     // ── Relay mode ───────────────────────────────────────────
     using RelayPacketCallback = std::function<void(const std::string& from_node_id,
@@ -140,7 +151,10 @@ private:
     // Relay mode members
     RelayPacketCallback relay_packet_cb_;
     RelayEventCallback relay_event_cb_;
+    PeerPacketCallback peer_packet_cb_;
     net::steady_timer relay_hb_timer_;
+    udp::endpoint peer_endpoint_;
+    bool peer_endpoint_known_ = false;
 
     static constexpr std::size_t MAX_BUF = 4096;
     std::array<char, MAX_BUF> recv_buffer_;
