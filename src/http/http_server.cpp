@@ -206,15 +206,16 @@ const char* kAdminHtml = R"HTML(<!doctype html>
 
       els.summaryText.textContent = `User ${data.user.user_id} · refreshed ${new Date().toLocaleTimeString()}`;
       els.mDevices.textContent = String(devices.length);
-      els.mOnline.textContent = String(devices.filter(d => d.online).length);
+      els.mOnline.textContent = String(devices.filter(d => d.connection_state === "online").length);
       els.mNetworks.textContent = String(networks.length);
       els.mPeers.textContent = String(peers.length);
 
       els.deviceRows.innerHTML = devices.map(d => {
         const nets = (memberships[d.node_id] || []).map(n => n.name).join(", ") || "-";
+        const state = d.connection_state || (d.online ? "online" : "offline");
         return `<tr data-node="${d.node_id}">
           <td><button data-node="${d.node_id}">${d.device_name || d.node_id}</button><div class="muted">${d.node_id}</div></td>
-          <td><span class="status ${d.online ? "online" : "offline"}"><span class="dot"></span>${d.online ? "online" : "offline"}</span></td>
+          <td><span class="status ${state === "online" ? "online" : "offline"}"><span class="dot"></span>${state}</span></td>
           <td>${fmtPublic(d.public_ip, d.public_port)}</td>
           <td>${d.virtual_ip || "-"}</td>
           <td>${nets}</td>
@@ -250,11 +251,12 @@ const char* kAdminHtml = R"HTML(<!doctype html>
       els.detailEmpty.classList.add("hidden");
       els.detailBody.classList.remove("hidden");
       const d = data.device;
+      const state = d.connection_state || (d.online ? "online" : "offline");
       const rows = [
         ["Node ID", d.node_id],
         ["Name", d.device_name || "-"],
         ["Owner user", d.owner_user_id || "-"],
-        ["Status", d.online ? "online" : "offline"],
+        ["Status", state],
         ["Public key", d.public_key || "-"],
         ["Public", fmtPublic(d.public_ip, d.public_port)],
         ["Virtual", d.virtual_ip || "-"],
@@ -1112,6 +1114,7 @@ http::response<http::string_body> HttpServer::handle_admin_overview(
         merged_devices[device.node_id] = device;
     }
     for (const auto& node : runtime_nodes) {
+        bool has_session = session_mgr_.hasSession(node.node_id);
         auto it = merged_devices.find(node.node_id);
         if (it == merged_devices.end()) {
             Device synthetic;
@@ -1122,10 +1125,10 @@ http::response<http::string_body> HttpServer::handle_admin_overview(
             synthetic.public_port = node.public_port;
             synthetic.lan_ips = node.local_addrs;
             synthetic.virtual_ip = node.virtual_ip;
-            synthetic.online = session_mgr_.hasSession(node.node_id);
+            synthetic.online = has_session;
             merged_devices[node.node_id] = std::move(synthetic);
         } else {
-            it->second.online = it->second.online || session_mgr_.hasSession(node.node_id);
+            it->second.online = has_session;
             if (it->second.public_ip.empty()) it->second.public_ip = node.public_ip;
             if (it->second.public_port == 0) it->second.public_port = node.public_port;
             if (it->second.lan_ips.empty()) it->second.lan_ips = node.local_addrs;
@@ -1165,7 +1168,15 @@ http::response<http::string_body> HttpServer::handle_admin_overview(
 
     nlohmann::json device_arr = nlohmann::json::array();
     for (const auto& [_, device] : merged_devices) {
-        device_arr.push_back(device.to_json());
+        auto json = device.to_json();
+        auto node = node_registry_.findNode(device.node_id);
+        bool ws_online = session_mgr_.hasSession(device.node_id);
+        bool registry_online = node.has_value() && node->online;
+        json["online"] = ws_online;
+        json["ws_online"] = ws_online;
+        json["registry_online"] = registry_online;
+        json["connection_state"] = ws_online ? "online" : (registry_online ? "grace" : "offline");
+        device_arr.push_back(std::move(json));
     }
     nlohmann::json network_arr = nlohmann::json::array();
     for (const auto& network : networks) {
@@ -1264,8 +1275,13 @@ http::response<http::string_body> HttpServer::handle_admin_device_detail(
         detail_device.online = session_mgr_.hasSession(node_id);
     }
 
+    bool ws_online = session_mgr_.hasSession(node_id);
+    bool registry_online = node.has_value() && node->online;
+    detail_device.online = ws_online;
+
     nlohmann::json runtime = {
-        {"ws_online", session_mgr_.hasSession(node_id)}
+        {"ws_online", ws_online},
+        {"connection_state", ws_online ? "online" : (registry_online ? "grace" : "offline")}
     };
     if (node.has_value()) {
         runtime["registry_online"] = node->online;
@@ -1279,8 +1295,14 @@ http::response<http::string_body> HttpServer::handle_admin_device_detail(
         runtime["subnet"] = node->subnet;
     }
 
+    auto device_json = detail_device.to_json();
+    device_json["online"] = ws_online;
+    device_json["ws_online"] = ws_online;
+    device_json["registry_online"] = registry_online;
+    device_json["connection_state"] = ws_online ? "online" : (registry_online ? "grace" : "offline");
+
     return make_json_response(http::status::ok, {
-        {"device", detail_device.to_json()},
+        {"device", device_json},
         {"networks", membership},
         {"runtime", runtime}
     });
