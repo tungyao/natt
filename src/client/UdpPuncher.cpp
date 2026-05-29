@@ -14,6 +14,7 @@ UdpPuncher::UdpPuncher(net::io_context& ioc, uint16_t bind_port)
     , local_port_(socket_.local_endpoint().port())
     , punch_timer_(ioc)
     , timeout_timer_(ioc)
+    , noise_retry_timer_(ioc)
     , relay_hb_timer_(ioc)
 {
     spdlog::info("UdpPuncher: bound to port {}", local_port_);
@@ -32,14 +33,35 @@ void UdpPuncher::stop() {
     boost::system::error_code ec;
     punch_timer_.cancel();
     timeout_timer_.cancel();
+    noise_retry_timer_.cancel();
     relay_hb_timer_.cancel();
     peer_endpoint_known_ = false;
+    punch_path_ready_ = false;
+    noise_ready_ = false;
+    noise_enabled_ = false;
+    noise_initiator_ = false;
+    last_noise_stage_ = 0;
+    handshake_retry_count_ = 0;
+    last_noise_message_.clear();
+    noise_.reset();
     socket_.close(ec);
 }
 
 void UdpPuncher::addTarget(const PunchTarget& target) {
     targets_.push_back(target);
     spdlog::debug("UdpPuncher: added target {}:{}", target.ip, target.port);
+}
+
+void UdpPuncher::configureNoise(NoiseProtocol::Role role,
+                                const NoiseProtocol::StaticKeypair& local_static,
+                                const std::array<std::uint8_t, NoiseProtocol::KEY_SIZE>& peer_static_public_key) {
+    noise_.emplace(role, local_static, peer_static_public_key);
+    noise_enabled_ = true;
+    noise_initiator_ = role == NoiseProtocol::Role::Initiator;
+    noise_ready_ = false;
+    last_noise_stage_ = 0;
+    handshake_retry_count_ = 0;
+    last_noise_message_.clear();
 }
 
 void UdpPuncher::startPunching(const std::string& my_node_id,
@@ -52,27 +74,17 @@ void UdpPuncher::startPunching(const std::string& my_node_id,
     punching_ = true;
     success_ = false;
     peer_endpoint_known_ = false;
+    punch_path_ready_ = false;
+    noise_ready_ = false;
+    last_noise_stage_ = 0;
+    handshake_retry_count_ = 0;
+    last_noise_message_.clear();
     start_time_ms_ = now_ms();
 
     spdlog::info("UdpPuncher: start punching -> node_id={}, {} targets, {}ms timeout",
                  target_node_id, targets_.size(), duration_ms);
 
-    // Schedule punch stop after duration (separate timer from burst interval)
-    timeout_timer_.expires_after(std::chrono::milliseconds(duration_ms));
-    timeout_timer_.async_wait([self = shared_from_this()](boost::system::error_code ec) {
-        if (ec) return;
-        self->punching_ = false;
-        if (!self->success_) {
-            spdlog::warn("UdpPuncher: timeout, P2P failed for node_id={}",
-                         self->target_node_id_);
-            if (self->punch_cb_) {
-                PunchResult r;
-                r.success = false;
-                r.remote_node_id = self->target_node_id_;
-                self->punch_cb_(r);
-            }
-        }
-    });
+    armTimeout(std::chrono::milliseconds(duration_ms));
 
     // Start the first punch burst
     do_send_punch();
@@ -146,7 +158,8 @@ void UdpPuncher::handle_receive(boost::system::error_code ec, std::size_t bytes_
         auto timestamp = json.value("timestamp", int64_t(0));
 
         const bool is_p2p_message =
-            type == "punch" || type == "punch_ack" || type == "p2p_packet";
+            type == "punch" || type == "punch_ack" ||
+            type == "noise_handshake" || type == "p2p_packet";
         if (is_p2p_message) {
             if (!to_node_id.empty() && to_node_id != my_node_id_) {
                 spdlog::debug("UdpPuncher: ignoring {} for node_id={} (expected {})",
@@ -176,6 +189,7 @@ void UdpPuncher::handle_receive(boost::system::error_code ec, std::size_t bytes_
             if (from_node_id == target_node_id_) {
                 peer_endpoint_ = remote_;
                 peer_endpoint_known_ = true;
+                punch_path_ready_ = true;
             }
 
             sendAck(my_node_id_, from_node_id, remote_);
@@ -185,32 +199,64 @@ void UdpPuncher::handle_receive(boost::system::error_code ec, std::size_t bytes_
                          remote_.port());
 
         } else if (type == "punch_ack") {
-            // P2P success!
-            if (!success_.exchange(true)) {
-                ack_time_ms_ = now_ms();
-                auto rtt = ack_time_ms_ - start_time_ms_;
-                peer_endpoint_ = remote_;
-                peer_endpoint_known_ = true;
-                spdlog::info("═══════════════════════════════════════════");
-                spdlog::info("  P2P SUCCESS with node_id={}", from_node_id);
-                spdlog::info("  Remote addr: {}:{}",
-                             remote_.address().to_string(), remote_.port());
-                spdlog::info("  RTT: {}ms", rtt);
-                spdlog::info("═══════════════════════════════════════════");
+            ack_time_ms_ = now_ms();
+            peer_endpoint_ = remote_;
+            peer_endpoint_known_ = true;
+            punch_path_ready_ = true;
 
+            if (noise_enabled_) {
                 punching_ = false;
-                timeout_timer_.cancel();
                 punch_timer_.cancel();
-
-                if (punch_cb_) {
-                    PunchResult r;
-                    r.success = true;
-                    r.remote_node_id = from_node_id;
-                    r.remote_ip = remote_.address().to_string();
-                    r.remote_port = remote_.port();
-                    r.rtt_ms = rtt;
-                    punch_cb_(r);
+                if (noise_initiator_) {
+                    startNoiseHandshake();
+                } else {
+                    armTimeout(std::chrono::milliseconds(3000));
                 }
+            } else if (!success_.load()) {
+                completeSecurePunch(from_node_id);
+            }
+
+        } else if (type == "noise_handshake") {
+            if (!noise_enabled_ || !noise_) {
+                spdlog::warn("UdpPuncher: received noise_handshake without local Noise state");
+                do_receive();
+                return;
+            }
+
+            const auto stage = json.value("stage", 0);
+            const auto encoded = json.value("payload", std::string());
+            auto payload = NoiseProtocol::decodeBase64(encoded);
+            if (!payload) {
+                spdlog::warn("UdpPuncher: invalid noise_handshake payload");
+                do_receive();
+                return;
+            }
+
+            peer_endpoint_ = remote_;
+            peer_endpoint_known_ = true;
+            punch_path_ready_ = true;
+
+            if (stage == 1 && !noise_initiator_) {
+                auto response = noise_->handleHandshakeMessage1(*payload);
+                if (response) {
+                    sendNoiseHandshake(2, *response);
+                    completeSecurePunch(from_node_id);
+                } else if (noise_->handshakeComplete() && !last_noise_message_.empty()) {
+                    sendNoiseHandshake(last_noise_stage_, last_noise_message_);
+                } else {
+                    spdlog::warn("UdpPuncher: failed to process Noise message1 from {}", from_node_id);
+                }
+            } else if (stage == 2 && noise_initiator_) {
+                if (noise_->handshakeComplete()) {
+                    spdlog::debug("UdpPuncher: ignoring duplicate Noise message2 from {}", from_node_id);
+                } else if (noise_->handleHandshakeMessage2(*payload)) {
+                    completeSecurePunch(from_node_id);
+                } else {
+                    spdlog::warn("UdpPuncher: failed to process Noise message2 from {}", from_node_id);
+                }
+            } else {
+                spdlog::debug("UdpPuncher: ignoring unexpected noise_handshake stage={} role={}",
+                              stage, noise_initiator_ ? "initiator" : "responder");
             }
 
         } else if (type == "p2p_packet") {
@@ -223,8 +269,40 @@ void UdpPuncher::handle_receive(boost::system::error_code ec, std::size_t bytes_
                 peer_endpoint_known_ = true;
             }
 
+            if (!noise_enabled_ || !noise_ || !noise_ready_) {
+                spdlog::warn("UdpPuncher: dropping unready p2p_packet seq={} from {}", seq, from_id);
+                do_receive();
+                return;
+            }
+            if (seq < 0) {
+                spdlog::warn("UdpPuncher: dropping negative seq from {}", from_id);
+                do_receive();
+                return;
+            }
+
+            auto ciphertext = NoiseProtocol::decodeBase64(payload);
+            if (!ciphertext) {
+                spdlog::warn("UdpPuncher: invalid p2p_packet base64 seq={} from {}", seq, from_id);
+                do_receive();
+                return;
+            }
+
+            auto ad = buildPacketAd(from_id, to_node_id, seq);
+            auto plaintext = noise_->decrypt(
+                static_cast<std::uint64_t>(seq),
+                *ciphertext,
+                std::span<const std::uint8_t>(
+                    reinterpret_cast<const std::uint8_t*>(ad.data()),
+                    ad.size()));
+            if (!plaintext) {
+                spdlog::warn("UdpPuncher: decrypt failed for p2p_packet seq={} from {}", seq, from_id);
+                do_receive();
+                return;
+            }
+
+            std::string cleartext(plaintext->begin(), plaintext->end());
             if (peer_packet_cb_) {
-                peer_packet_cb_(from_id, payload, seq);
+                peer_packet_cb_(from_id, cleartext, seq);
             }
 
         } else if (type == "relay_packet") {
@@ -265,7 +343,21 @@ bool UdpPuncher::sendPeerPacket(const std::string& from_node_id,
                                 const std::string& to_node_id,
                                 int64_t seq,
                                 const std::string& payload_data) {
-    if (!success_ || !peer_endpoint_known_) {
+    if (!success_ || !peer_endpoint_known_ || !noise_enabled_ || !noise_ || !noise_ready_ || seq < 0) {
+        return false;
+    }
+
+    auto ad = buildPacketAd(from_node_id, to_node_id, seq);
+    auto ciphertext = noise_->encrypt(
+        static_cast<std::uint64_t>(seq),
+        std::span<const std::uint8_t>(
+            reinterpret_cast<const std::uint8_t*>(payload_data.data()),
+            payload_data.size()),
+        std::span<const std::uint8_t>(
+            reinterpret_cast<const std::uint8_t*>(ad.data()),
+            ad.size()));
+    if (!ciphertext) {
+        spdlog::warn("UdpPuncher: encrypt failed for p2p_packet seq={}", seq);
         return false;
     }
 
@@ -274,7 +366,7 @@ bool UdpPuncher::sendPeerPacket(const std::string& from_node_id,
         {"from_node_id", from_node_id},
         {"to_node_id", to_node_id},
         {"seq", seq},
-        {"payload", payload_data}
+        {"payload", NoiseProtocol::encodeBase64(*ciphertext)}
     };
     auto payload = msg.dump();
 
@@ -317,13 +409,135 @@ void UdpPuncher::do_send_punch() {
 }
 
 void UdpPuncher::do_send_to(const std::string& payload, const udp::endpoint& target) {
+    auto buffer = std::make_shared<std::string>(payload);
     socket_.async_send_to(
-        net::buffer(payload), target,
-        [](boost::system::error_code ec, std::size_t) {
+        net::buffer(*buffer), target,
+        [buffer](boost::system::error_code ec, std::size_t) {
             if (ec) {
                 spdlog::error("UdpPuncher: async send error: {}", ec.message());
             }
         });
+}
+
+void UdpPuncher::armTimeout(std::chrono::milliseconds timeout) {
+    timeout_timer_.cancel();
+    timeout_timer_.expires_after(timeout);
+    timeout_timer_.async_wait([self = shared_from_this()](boost::system::error_code ec) {
+        if (ec) return;
+        self->punching_ = false;
+        if (!self->success_) {
+            spdlog::warn("UdpPuncher: timeout, P2P failed for node_id={}",
+                         self->target_node_id_);
+            self->noise_retry_timer_.cancel();
+            if (self->punch_cb_) {
+                PunchResult r;
+                r.success = false;
+                r.remote_node_id = self->target_node_id_;
+                self->punch_cb_(r);
+            }
+        }
+    });
+}
+
+void UdpPuncher::completeSecurePunch(const std::string& remote_node_id) {
+    if (success_.exchange(true)) {
+        return;
+    }
+
+    noise_ready_ = noise_enabled_ ? (noise_ && noise_->handshakeComplete()) : true;
+    ack_time_ms_ = now_ms();
+    auto rtt = ack_time_ms_ - start_time_ms_;
+
+    punching_ = false;
+    timeout_timer_.cancel();
+    punch_timer_.cancel();
+    noise_retry_timer_.cancel();
+
+    spdlog::info("═══════════════════════════════════════════");
+    spdlog::info("  P2P SUCCESS with node_id={}", remote_node_id);
+    spdlog::info("  Remote addr: {}:{}",
+                 peer_endpoint_.address().to_string(), peer_endpoint_.port());
+    spdlog::info("  RTT: {}ms", rtt);
+    if (noise_enabled_) {
+        spdlog::info("  Noise:       {}", noise_ready_ ? "ready" : "disabled");
+    }
+    spdlog::info("═══════════════════════════════════════════");
+
+    if (punch_cb_) {
+        PunchResult r;
+        r.success = true;
+        r.remote_node_id = remote_node_id;
+        r.remote_ip = peer_endpoint_.address().to_string();
+        r.remote_port = peer_endpoint_.port();
+        r.rtt_ms = rtt;
+        punch_cb_(r);
+    }
+}
+
+void UdpPuncher::startNoiseHandshake() {
+    if (!noise_enabled_ || !noise_ || !noise_initiator_ || !peer_endpoint_known_ || success_) {
+        return;
+    }
+
+    if (last_noise_stage_ == 1 && !last_noise_message_.empty()) {
+        sendNoiseHandshake(last_noise_stage_, last_noise_message_);
+        return;
+    }
+
+    auto msg1 = noise_->buildHandshakeMessage1();
+    if (!msg1) {
+        spdlog::warn("UdpPuncher: failed to build Noise handshake message1");
+        return;
+    }
+
+    sendNoiseHandshake(1, *msg1);
+    armTimeout(std::chrono::milliseconds(3000));
+    scheduleNoiseRetry();
+}
+
+void UdpPuncher::sendNoiseHandshake(int stage, std::span<const std::uint8_t> payload) {
+    if (!peer_endpoint_known_) {
+        return;
+    }
+
+    last_noise_stage_ = stage;
+    last_noise_message_.assign(payload.begin(), payload.end());
+
+    nlohmann::json msg = {
+        {"type", "noise_handshake"},
+        {"from_node_id", my_node_id_},
+        {"to_node_id", target_node_id_},
+        {"stage", stage},
+        {"payload", NoiseProtocol::encodeBase64(payload)}
+    };
+    do_send_to(msg.dump(), peer_endpoint_);
+    spdlog::debug("UdpPuncher: -> noise_handshake stage={} to {}:{}",
+                  stage,
+                  peer_endpoint_.address().to_string(),
+                  peer_endpoint_.port());
+}
+
+void UdpPuncher::scheduleNoiseRetry() {
+    if (!noise_initiator_ || success_ || !peer_endpoint_known_ || last_noise_stage_ != 1 || last_noise_message_.empty()) {
+        return;
+    }
+
+    noise_retry_timer_.cancel();
+    noise_retry_timer_.expires_after(std::chrono::milliseconds(400));
+    noise_retry_timer_.async_wait([self = shared_from_this()](boost::system::error_code ec) {
+        if (ec || self->success_ || !self->noise_initiator_) {
+            return;
+        }
+        ++self->handshake_retry_count_;
+        self->sendNoiseHandshake(self->last_noise_stage_, self->last_noise_message_);
+        self->scheduleNoiseRetry();
+    });
+}
+
+std::string UdpPuncher::buildPacketAd(const std::string& from_node_id,
+                                      const std::string& to_node_id,
+                                      int64_t seq) {
+    return from_node_id + "|" + to_node_id + "|" + std::to_string(seq);
 }
 
 // ── Relay Mode ──────────────────────────────────────────────

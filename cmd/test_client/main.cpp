@@ -43,6 +43,8 @@ int main(int argc, char* argv[]) {
             opts.local_addr = argv[++i];
         } else if (arg == "--relay" && i + 1 < argc) {
             opts.relay_addr = argv[++i];
+        } else if (arg == "--noise-private-key" && i + 1 < argc) {
+            opts.noise_private_key = argv[++i];
         } else if (arg == "--tun") {
             opts.enable_tun = true;
         } else if (arg == "--tun-name" && i + 1 < argc) {
@@ -58,6 +60,7 @@ int main(int argc, char* argv[]) {
                       << "  --udp-port 40001 \\\n"
                       << "  --connect node-b \\\n"
                       << "  --local-addr 192.168.1.10:40001 \\\n"
+                      << "  --noise-private-key <base64-x25519-private-key> \\\n"
                       << "  --relay 127.0.0.1:7000\n";
             return 0;
         }

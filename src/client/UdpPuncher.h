@@ -1,7 +1,9 @@
 #pragma once
 
 #include <boost/asio.hpp>
+#include "crypto/NoiseProtocol.h"
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 #include <vector>
 #include <memory>
@@ -75,6 +77,11 @@ public:
 
     // Check if P2P was successful
     bool isSuccess() const { return success_; }
+    bool isNoiseReady() const { return noise_ready_; }
+
+    void configureNoise(NoiseProtocol::Role role,
+                        const NoiseProtocol::StaticKeypair& local_static,
+                        const std::array<std::uint8_t, NoiseProtocol::KEY_SIZE>& peer_static_public_key);
 
     // Send a direct peer packet over the punched UDP path
     bool sendPeerPacket(const std::string& from_node_id,
@@ -125,6 +132,14 @@ private:
     void handle_receive(boost::system::error_code ec, std::size_t len);
     void do_send_punch();
     void do_send_to(const std::string& payload, const udp::endpoint& target);
+    void armTimeout(std::chrono::milliseconds timeout);
+    void completeSecurePunch(const std::string& remote_node_id);
+    void startNoiseHandshake();
+    void sendNoiseHandshake(int stage, std::span<const std::uint8_t> payload);
+    void scheduleNoiseRetry();
+    static std::string buildPacketAd(const std::string& from_node_id,
+                                     const std::string& to_node_id,
+                                     int64_t seq);
 
     net::io_context& ioc_;
     udp::socket socket_;
@@ -144,6 +159,7 @@ private:
 
     net::steady_timer punch_timer_;    // per-burst interval timer
     net::steady_timer timeout_timer_;  // overall timeout
+    net::steady_timer noise_retry_timer_;
 
     PunchCallback punch_cb_;
     PacketCallback packet_cb_;
@@ -155,6 +171,14 @@ private:
     net::steady_timer relay_hb_timer_;
     udp::endpoint peer_endpoint_;
     bool peer_endpoint_known_ = false;
+    bool punch_path_ready_ = false;
+    bool noise_ready_ = false;
+    bool noise_enabled_ = false;
+    bool noise_initiator_ = false;
+    int last_noise_stage_ = 0;
+    int handshake_retry_count_ = 0;
+    std::vector<std::uint8_t> last_noise_message_;
+    std::optional<NoiseProtocol> noise_;
 
     static constexpr std::size_t MAX_BUF = 4096;
     std::array<char, MAX_BUF> recv_buffer_;

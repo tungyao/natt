@@ -1,6 +1,7 @@
 #include "client/TestClient.h"
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
+#include <algorithm>
 #include <thread>
 #include <sstream>
 #include <chrono>
@@ -26,6 +27,27 @@ TestClient::TestClient()
 
 TestClient::~TestClient() {
     stop();
+}
+
+bool TestClient::prepareNoiseIdentity() {
+    if (noise_static_keypair_) {
+        return true;
+    }
+
+    if (!opts_.noise_private_key.empty()) {
+        noise_static_keypair_ = NoiseProtocol::loadStaticKeypairBase64(opts_.noise_private_key);
+    } else {
+        noise_static_keypair_ = NoiseProtocol::generateStaticKeypair();
+    }
+
+    if (!noise_static_keypair_) {
+        spdlog::error("Noise identity init failed");
+        return false;
+    }
+
+    noise_public_key_b64_ = NoiseProtocol::encodeBase64(noise_static_keypair_->public_key);
+    spdlog::info("Noise static public key: {}", noise_public_key_b64_);
+    return true;
 }
 
 void TestClient::stop() {
@@ -123,7 +145,7 @@ bool TestClient::connect_control_channel(bool reconnecting) {
         {"type", "auth"},
         {"node_id", opts_.node_id},
         {"network_id", opts_.network_id},
-        {"public_key", opts_.public_key}
+        {"public_key", noise_public_key_b64_}
     };
     if (!ws->send(auth_msg)) {
         spdlog::error("Failed to send auth");
@@ -292,6 +314,10 @@ bool TestClient::run(const Options& opts) {
     spdlog::info("  connect:      {}", opts.connect_node_id.empty() ? "(wait)" : opts.connect_node_id);
     spdlog::info("  relay:        {}", opts.relay_addr.empty() ? "(none)" : opts.relay_addr);
     spdlog::info("═══════════════════════════════════════════");
+
+    if (!prepareNoiseIdentity()) {
+        return false;
+    }
 
     // Step 1: Query STUN server
     {
@@ -494,7 +520,7 @@ void TestClient::on_punch_start(const nlohmann::json& data) {
 
     // If we already have a successful P2P connection or are done punching,
     // ignore duplicate punch_start
-    if (punch_success_.load() || punch_done_.load()) {
+    if (punch_success_.load() || punch_done_.load() || puncher_) {
         spdlog::info("punch_start ignored: already connected or punching in progress");
         return;
     }
@@ -503,6 +529,20 @@ void TestClient::on_punch_start(const nlohmann::json& data) {
     auto peer_public_ip = data["peer_public_ip"].get<std::string>();
     auto peer_public_port = static_cast<uint16_t>(data["peer_public_port"].get<int>());
     auto direction = data.value("direction", std::string());
+    auto peer_public_key_b64 = data.value("peer_public_key", std::string());
+
+    if (!noise_static_keypair_) {
+        spdlog::error("Noise identity missing, cannot start secure P2P");
+        return;
+    }
+
+    auto peer_public_key_raw = NoiseProtocol::decodeBase64(peer_public_key_b64);
+    if (!peer_public_key_raw || peer_public_key_raw->size() != NoiseProtocol::KEY_SIZE) {
+        spdlog::error("Invalid peer_public_key for {}: expected base64 X25519 public key", peer_node_id);
+        return;
+    }
+    std::array<std::uint8_t, NoiseProtocol::KEY_SIZE> peer_public_key{};
+    std::copy(peer_public_key_raw->begin(), peer_public_key_raw->end(), peer_public_key.begin());
 
     spdlog::info("═══════════════════════════════════════════");
     spdlog::info("  punch_start ({})", direction);
@@ -559,6 +599,10 @@ void TestClient::on_punch_start(const nlohmann::json& data) {
         if (stopping_) return;
         relay_to_tun(from, payload, seq);
     });
+    puncher_->configureNoise(
+        direction == "outgoing" ? NoiseProtocol::Role::Initiator : NoiseProtocol::Role::Responder,
+        *noise_static_keypair_,
+        peer_public_key);
 
     // Post ALL puncher operations first, then start the thread.
     // This ensures work is already queued when puncher_ioc_.run() starts.

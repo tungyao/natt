@@ -6,6 +6,10 @@ include(FetchContent)
 find_package(Boost REQUIRED COMPONENTS system)
 message(STATUS "Boost found: ${Boost_VERSION}")
 
+# ── OpenSSL (system) ───────────────────────────────────────────
+find_package(OpenSSL REQUIRED)
+message(STATUS "OpenSSL found: ${OPENSSL_VERSION}")
+
 # ── nlohmann_json ──────────────────────────────────────────────
 set(NLOHMANN_JSON_LOCAL_SOURCE "${CMAKE_BINARY_DIR}/_deps/nlohmann_json-src")
 if(EXISTS "${NLOHMANN_JSON_LOCAL_SOURCE}/include/nlohmann/json.hpp")

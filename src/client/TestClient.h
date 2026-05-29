@@ -7,8 +7,10 @@
 #include <thread>
 #include <vector>
 #include <chrono>
+#include <optional>
 #include "client/WsClient.h"
 #include "client/UdpPuncher.h"
+#include "crypto/NoiseProtocol.h"
 #include "tun/TunInterface.h"
 
 namespace net = boost::asio;
@@ -32,6 +34,7 @@ public:
         std::string node_id;
         std::string network_id;
         std::string public_key = "test-key";
+        std::string noise_private_key; // base64-encoded 32-byte X25519 private key
         std::string control_url;      // e.g. "127.0.0.1:8080"
         std::string stun_addr;        // e.g. "127.0.0.1:3478"
         uint16_t udp_port = 0;        // 0 = auto bind
@@ -82,6 +85,7 @@ private:
     void report_transport_state(const std::string& mode, int64_t rtt_ms = 0);
 
     // Control channel
+    bool prepareNoiseIdentity();
     bool connect_control_channel(bool reconnecting);
     bool send_update_addr();
     bool send_connect_peer_request();
@@ -109,6 +113,8 @@ private:
     std::string ctrl_path_ = "/api/v1/ws/nat";
     std::chrono::steady_clock::time_point next_reconnect_attempt_{};
     std::atomic<int> reported_transport_mode_{-1};
+    std::optional<NoiseProtocol::StaticKeypair> noise_static_keypair_;
+    std::string noise_public_key_b64_;
 
     std::atomic<bool> punch_success_{false};
     std::atomic<bool> punch_done_{false};

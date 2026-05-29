@@ -11,6 +11,7 @@ include(cmake/dependencies.cmake)
 # ── Library sources (shared between executables) ─────────────
 set(LIB_SOURCES
     src/config/config.cpp
+    src/crypto/NoiseProtocol.cpp
     src/repository/database.cpp
     src/repository/user_repo.cpp
     src/repository/device_repo.cpp
@@ -39,6 +40,7 @@ set(LIB_SOURCES
 
 set(LIB_HEADERS
     src/config/config.h
+    src/crypto/NoiseProtocol.h
     src/model/user.h
     src/model/device.h
     src/model/network.h
@@ -77,6 +79,7 @@ set(COMMON_INCLUDES
 set(COMMON_LIBS
     Boost::headers
     Boost::system
+    OpenSSL::Crypto
     nlohmann_json::nlohmann_json
     spdlog::spdlog
 )
@@ -127,6 +130,7 @@ target_compile_options(stun_server PRIVATE -Wall -Wextra -Wpedantic -Wno-unused-
 # ── test_client ──────────────────────────────────────────────
 set(CLIENT_SOURCES
     cmd/test_client/main.cpp
+    src/crypto/NoiseProtocol.cpp
     src/client/WsClient.cpp
     src/client/UdpPuncher.cpp
     src/client/TestClient.cpp
