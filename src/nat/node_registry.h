@@ -19,6 +19,12 @@ struct NodeInfo {
     std::string gateway_ip;
     std::string subnet;
     bool online = false;
+    bool session_online = false;
+    std::string connection_state = "offline";
+    std::string transport_mode = "unknown";
+    int64_t last_transport_rtt_ms = 0;
+    int reconnect_count = 0;
+    std::string last_disconnect_reason;
     std::chrono::system_clock::time_point last_seen;
 
     nlohmann::json to_punch_json() const {
@@ -68,6 +74,17 @@ public:
                        const std::string& public_ip,
                        int public_port,
                        const std::vector<std::string>& local_addrs);
+
+    // Update session/connection state
+    void updateSessionState(const std::string& node_id,
+                            bool session_online,
+                            const std::string& connection_state,
+                            const std::string& disconnect_reason = "");
+
+    // Update transport state
+    void updateTransportState(const std::string& node_id,
+                              const std::string& transport_mode,
+                              int64_t rtt_ms = 0);
 
     // Find a single node by ID
     std::optional<NodeInfo> findNode(const std::string& node_id) const;

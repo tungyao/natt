@@ -82,6 +82,28 @@ void TestClient::ensure_io_thread() {
     });
 }
 
+void TestClient::report_transport_state(const std::string& mode, int64_t rtt_ms) {
+    if (!ws_ || !ws_->isConnected()) return;
+
+    int mode_code = 0;
+    if (mode == "server") mode_code = 1;
+    else if (mode == "p2p") mode_code = 2;
+    else if (mode == "relay") mode_code = 3;
+
+    int expected = reported_transport_mode_.load();
+    if (expected == mode_code && rtt_ms <= 0) {
+        return;
+    }
+    reported_transport_mode_ = mode_code;
+
+    nlohmann::json msg = {
+        {"type", "transport_status"},
+        {"mode", mode},
+        {"rtt_ms", rtt_ms}
+    };
+    ws_->send(msg);
+}
+
 bool TestClient::connect_control_channel(bool reconnecting) {
     if (stopping_) return false;
 
@@ -153,6 +175,7 @@ bool TestClient::connect_control_channel(bool reconnecting) {
     }
 
     start_heartbeat();
+    report_transport_state("server");
     return true;
 }
 
@@ -564,6 +587,7 @@ void TestClient::on_punch_result(const PunchResult& result) {
     if (result.success) {
         mode_ = ClientMode::P2P;
         punch_success_ = true;
+        report_transport_state("p2p", result.rtt_ms);
         spdlog::info("✓ P2P Hole Punch SUCCESS with {} at {}:{} (RTT={}ms)",
                      result.remote_node_id, result.remote_ip,
                      result.remote_port, result.rtt_ms);
@@ -587,6 +611,7 @@ void TestClient::enter_relay_mode() {
     if (stopping_) return;
 
     mode_ = ClientMode::RELAY;
+    report_transport_state("relay");
 
     // Set up relay callbacks on the puncher (posted to puncher_ioc_)
     net::post(puncher_ioc_, [this]() {
@@ -841,6 +866,7 @@ void TestClient::send_tun_packet_to_server(const std::vector<uint8_t>& packet) {
         if (puncher_->sendPeerPacket(opts_.node_id, peer_node_id_, relay_seq_, hex_encode(packet))) {
             return;
         }
+        report_transport_state("server");
         spdlog::warn("TUN bridge: direct P2P send failed, falling back to server");
     }
 

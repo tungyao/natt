@@ -79,6 +79,7 @@ private:
     void start_heartbeat();
     void schedule_heartbeat();
     void maintain_control_connection();
+    void report_transport_state(const std::string& mode, int64_t rtt_ms = 0);
 
     // Control channel
     bool connect_control_channel(bool reconnecting);
@@ -107,6 +108,7 @@ private:
     std::string ctrl_port_ = "8080";
     std::string ctrl_path_ = "/api/v1/ws/nat";
     std::chrono::steady_clock::time_point next_reconnect_attempt_{};
+    std::atomic<int> reported_transport_mode_{-1};
 
     std::atomic<bool> punch_success_{false};
     std::atomic<bool> punch_done_{false};

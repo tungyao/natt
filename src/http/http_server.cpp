@@ -83,7 +83,7 @@ const char* kAdminHtml = R"HTML(<!doctype html>
           <div class="panel">
             <h2>Devices</h2>
             <table>
-              <thead><tr><th>Node</th><th>Status</th><th>Public</th><th>Virtual</th><th>Networks</th></tr></thead>
+              <thead><tr><th>Node</th><th>Status</th><th>Transport</th><th>Public</th><th>Virtual</th><th>Networks</th></tr></thead>
               <tbody id="deviceRows"></tbody>
             </table>
           </div>
@@ -216,6 +216,7 @@ const char* kAdminHtml = R"HTML(<!doctype html>
         return `<tr data-node="${d.node_id}">
           <td><button data-node="${d.node_id}">${d.device_name || d.node_id}</button><div class="muted">${d.node_id}</div></td>
           <td><span class="status ${state === "online" ? "online" : "offline"}"><span class="dot"></span>${state}</span></td>
+          <td>${d.transport_mode || "unknown"}</td>
           <td>${fmtPublic(d.public_ip, d.public_port)}</td>
           <td>${d.virtual_ip || "-"}</td>
           <td>${nets}</td>
@@ -257,12 +258,16 @@ const char* kAdminHtml = R"HTML(<!doctype html>
         ["Name", d.device_name || "-"],
         ["Owner user", d.owner_user_id || "-"],
         ["Status", state],
+        ["Transport", d.transport_mode || "unknown"],
         ["Public key", d.public_key || "-"],
         ["Public", fmtPublic(d.public_ip, d.public_port)],
         ["Virtual", d.virtual_ip || "-"],
         ["Gateway", data.runtime?.gateway_ip || "-"],
         ["Subnet", data.runtime?.subnet || "-"],
         ["Last heartbeat", d.last_heartbeat || "-"],
+        ["Transport RTT", data.runtime?.last_transport_rtt_ms ? `${data.runtime.last_transport_rtt_ms} ms` : "-"],
+        ["Reconnects", data.runtime?.reconnect_count ?? 0],
+        ["Disconnect reason", data.runtime?.last_disconnect_reason || "-"],
         ["WS session", data.runtime?.ws_online ? "online" : "offline"],
         ["Registry state", data.runtime?.registry_online ? "online" : "offline"],
         ["Created", d.created_at || "-"],
@@ -454,6 +459,14 @@ HttpServer::HttpServer(net::io_context& ioc,
             node_registry_.updateHeartbeat(node_id);
             device_svc_.update_heartbeat(node_id);
             session->send_json(nlohmann::json{{"type", "pong"}}.dump());
+        }
+    );
+
+    msg_dispatcher_.registerHandler("transport_status",
+        [this](WsSessionPtr session, const std::string& node_id, const nlohmann::json& msg) {
+            auto mode = msg.value("mode", std::string("unknown"));
+            auto rtt_ms = msg.value("rtt_ms", int64_t(0));
+            node_registry_.updateTransportState(node_id, mode, rtt_ms);
         }
     );
 
@@ -662,6 +675,7 @@ void HttpServer::forward_tun_packet(const std::string& network_id,
 void HttpServer::handle_tun_packet(const std::string& node_id, const nlohmann::json& msg) {
     auto node = node_registry_.findNode(node_id);
     if (!node.has_value()) return;
+    node_registry_.updateTransportState(node_id, "server");
 
     auto payload = msg.value("payload", std::string());
     auto packet = hex_decode(payload);
@@ -674,6 +688,7 @@ void HttpServer::handle_tun_packet(const std::string& node_id, const nlohmann::j
             return peer.virtual_ip == dst;
         });
         if (it != peers.end()) {
+            node_registry_.updateTransportState(it->node_id, "server");
             nlohmann::json forward = {
                 {"type", "tun_packet"},
                 {"payload", payload}
@@ -1170,12 +1185,18 @@ http::response<http::string_body> HttpServer::handle_admin_overview(
     for (const auto& [_, device] : merged_devices) {
         auto json = device.to_json();
         auto node = node_registry_.findNode(device.node_id);
-        bool ws_online = session_mgr_.hasSession(device.node_id);
+        bool ws_online = node.has_value() ? node->session_online : session_mgr_.hasSession(device.node_id);
         bool registry_online = node.has_value() && node->online;
         json["online"] = ws_online;
         json["ws_online"] = ws_online;
         json["registry_online"] = registry_online;
-        json["connection_state"] = ws_online ? "online" : (registry_online ? "grace" : "offline");
+        json["connection_state"] = node.has_value()
+            ? node->connection_state
+            : (ws_online ? "online" : (registry_online ? "grace" : "offline"));
+        json["transport_mode"] = node.has_value() ? node->transport_mode : "unknown";
+        json["last_transport_rtt_ms"] = node.has_value() ? node->last_transport_rtt_ms : 0;
+        json["reconnect_count"] = node.has_value() ? node->reconnect_count : 0;
+        json["last_disconnect_reason"] = node.has_value() ? node->last_disconnect_reason : "";
         device_arr.push_back(std::move(json));
     }
     nlohmann::json network_arr = nlohmann::json::array();
@@ -1275,16 +1296,21 @@ http::response<http::string_body> HttpServer::handle_admin_device_detail(
         detail_device.online = session_mgr_.hasSession(node_id);
     }
 
-    bool ws_online = session_mgr_.hasSession(node_id);
+    bool ws_online = node.has_value() ? node->session_online : session_mgr_.hasSession(node_id);
     bool registry_online = node.has_value() && node->online;
     detail_device.online = ws_online;
 
     nlohmann::json runtime = {
         {"ws_online", ws_online},
-        {"connection_state", ws_online ? "online" : (registry_online ? "grace" : "offline")}
+        {"connection_state", node.has_value() ? node->connection_state : (ws_online ? "online" : (registry_online ? "grace" : "offline"))}
     };
     if (node.has_value()) {
         runtime["registry_online"] = node->online;
+        runtime["session_online"] = node->session_online;
+        runtime["transport_mode"] = node->transport_mode;
+        runtime["last_transport_rtt_ms"] = node->last_transport_rtt_ms;
+        runtime["reconnect_count"] = node->reconnect_count;
+        runtime["last_disconnect_reason"] = node->last_disconnect_reason;
         runtime["runtime_public_key"] = node->public_key;
         runtime["runtime_public_ip"] = node->public_ip;
         runtime["runtime_public_port"] = node->public_port;
@@ -1299,7 +1325,8 @@ http::response<http::string_body> HttpServer::handle_admin_device_detail(
     device_json["online"] = ws_online;
     device_json["ws_online"] = ws_online;
     device_json["registry_online"] = registry_online;
-    device_json["connection_state"] = ws_online ? "online" : (registry_online ? "grace" : "offline");
+    device_json["connection_state"] = runtime["connection_state"];
+    device_json["transport_mode"] = runtime.value("transport_mode", std::string("unknown"));
 
     return make_json_response(http::status::ok, {
         {"device", device_json},
@@ -1330,6 +1357,7 @@ void HttpServer::handle_websocket_upgrade(tcp::socket&& socket,
                 auto info = assign_virtual_ip(node_id, network_id, public_key);
                 ensure_node_auth_persisted(info);
                 node_registry_.registerNode(info);
+                node_registry_.updateSessionState(node_id, true, "online");
                 ensure_tun_gateway(info.network_id);
 
                 beast_ws::AuthResult result;
@@ -1413,6 +1441,7 @@ void HttpServer::handle_websocket_upgrade(tcp::socket&& socket,
             [this](const std::string& node_id) {
                 if (shutting_down_) return;
                 spdlog::info("WebSocket disconnected: node_id={} (waiting for heartbeat timeout)", node_id);
+                node_registry_.updateSessionState(node_id, false, "grace", "ws_disconnected");
                 session_mgr_.removeSession(node_id);
 
                 // Broadcast updated peer list (node is still in registry but offline session)
