@@ -8,6 +8,288 @@
 
 namespace {
 
+const char* kAdminHtml = R"HTML(<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NATMesh Admin</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0f172a; --panel:#111827; --muted:#94a3b8; --line:#1f2937; --text:#e5e7eb; --accent:#22c55e; --warn:#f59e0b; }
+    * { box-sizing:border-box; }
+    body { margin:0; font:14px/1.4 system-ui,sans-serif; background:var(--bg); color:var(--text); }
+    .app { max-width:1280px; margin:0 auto; padding:24px; }
+    .bar, .grid, .list, .detail, .login { display:grid; gap:16px; }
+    .bar { grid-template-columns:repeat(4,minmax(0,1fr)); margin-bottom:16px; }
+    .grid { grid-template-columns:1.35fr 1fr; align-items:start; }
+    .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px; }
+    .panel h2, .panel h3 { margin:0 0 12px; font-size:14px; }
+    .metric { min-height:92px; }
+    .metric .v { font-size:28px; font-weight:700; margin-top:8px; }
+    .muted { color:var(--muted); }
+    .row { display:flex; gap:12px; align-items:center; justify-content:space-between; }
+    .status { display:inline-flex; align-items:center; gap:6px; }
+    .dot { width:8px; height:8px; border-radius:50%; background:var(--muted); }
+    .online .dot { background:var(--accent); }
+    .offline .dot { background:var(--warn); }
+    table { width:100%; border-collapse:collapse; }
+    th, td { text-align:left; padding:10px 8px; border-top:1px solid var(--line); vertical-align:top; }
+    th { color:var(--muted); font-weight:600; font-size:12px; }
+    button, input { font:inherit; }
+    button { border:1px solid var(--line); background:#0b1220; color:var(--text); border-radius:6px; padding:8px 12px; cursor:pointer; }
+    button.primary { background:#1d4ed8; border-color:#1d4ed8; }
+    input { width:100%; padding:10px 12px; border-radius:6px; border:1px solid var(--line); background:#0b1220; color:var(--text); }
+    .login { max-width:360px; margin:72px auto; }
+    .hidden { display:none; }
+    .kv { display:grid; grid-template-columns:120px 1fr; gap:8px 12px; }
+    .chips { display:flex; flex-wrap:wrap; gap:8px; }
+    .chip { border:1px solid var(--line); border-radius:999px; padding:4px 10px; color:var(--muted); }
+    .section { margin-top:12px; }
+    @media (max-width: 960px) { .bar, .grid { grid-template-columns:1fr; } }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div id="login" class="login panel">
+      <h1 style="margin:0;font-size:20px;">NATMesh Admin</h1>
+      <div class="muted">Sign in with an existing API user.</div>
+      <input id="username" placeholder="Username">
+      <input id="password" type="password" placeholder="Password">
+      <button id="loginBtn" class="primary">Sign In</button>
+      <div id="loginError" class="muted"></div>
+    </div>
+
+    <div id="dashboard" class="hidden">
+      <div class="row" style="margin-bottom:16px;">
+        <div>
+          <h1 style="margin:0;font-size:20px;">NATMesh Admin</h1>
+          <div id="summaryText" class="muted"></div>
+        </div>
+        <div class="row">
+          <button id="refreshBtn">Refresh</button>
+          <button id="logoutBtn">Logout</button>
+        </div>
+      </div>
+
+      <div class="bar">
+        <div class="panel metric"><div class="muted">Devices</div><div id="mDevices" class="v">0</div></div>
+        <div class="panel metric"><div class="muted">Online Devices</div><div id="mOnline" class="v">0</div></div>
+        <div class="panel metric"><div class="muted">Networks</div><div id="mNetworks" class="v">0</div></div>
+        <div class="panel metric"><div class="muted">Runtime Peers</div><div id="mPeers" class="v">0</div></div>
+      </div>
+
+      <div class="grid">
+        <div class="list">
+          <div class="panel">
+            <h2>Devices</h2>
+            <table>
+              <thead><tr><th>Node</th><th>Status</th><th>Public</th><th>Virtual</th><th>Networks</th></tr></thead>
+              <tbody id="deviceRows"></tbody>
+            </table>
+          </div>
+          <div class="panel">
+            <h2>Networks</h2>
+            <table>
+              <thead><tr><th>Name</th><th>Subnet</th><th>Devices</th></tr></thead>
+              <tbody id="networkRows"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="detail">
+          <div class="panel">
+            <h2>Node Detail</h2>
+            <div id="detailEmpty" class="muted">Select a device to inspect runtime and membership state.</div>
+            <div id="detailBody" class="hidden">
+              <div class="kv" id="detailKv"></div>
+              <div class="section">
+                <h3>Networks</h3>
+                <div id="detailNetworks" class="chips"></div>
+              </div>
+              <div class="section">
+                <h3>LAN Addresses</h3>
+                <div id="detailLan" class="chips"></div>
+              </div>
+            </div>
+          </div>
+          <div class="panel">
+            <h2>Online Peers</h2>
+            <table>
+              <thead><tr><th>Node</th><th>Public</th><th>Virtual</th></tr></thead>
+              <tbody id="peerRows"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script>
+    const tokenKey = "natmesh_admin_token";
+    const els = {
+      login: document.getElementById("login"),
+      dashboard: document.getElementById("dashboard"),
+      loginBtn: document.getElementById("loginBtn"),
+      logoutBtn: document.getElementById("logoutBtn"),
+      refreshBtn: document.getElementById("refreshBtn"),
+      username: document.getElementById("username"),
+      password: document.getElementById("password"),
+      loginError: document.getElementById("loginError"),
+      summaryText: document.getElementById("summaryText"),
+      mDevices: document.getElementById("mDevices"),
+      mOnline: document.getElementById("mOnline"),
+      mNetworks: document.getElementById("mNetworks"),
+      mPeers: document.getElementById("mPeers"),
+      deviceRows: document.getElementById("deviceRows"),
+      networkRows: document.getElementById("networkRows"),
+      peerRows: document.getElementById("peerRows"),
+      detailEmpty: document.getElementById("detailEmpty"),
+      detailBody: document.getElementById("detailBody"),
+      detailKv: document.getElementById("detailKv"),
+      detailNetworks: document.getElementById("detailNetworks"),
+      detailLan: document.getElementById("detailLan")
+    };
+    let authToken = localStorage.getItem(tokenKey) || "";
+    let currentOverview = null;
+
+    function setAuthed(authed) {
+      els.login.classList.toggle("hidden", authed);
+      els.dashboard.classList.toggle("hidden", !authed);
+    }
+
+    function fmtPublic(ip, port) { return ip ? `${ip}:${port || 0}` : "-"; }
+    function chip(text) { return `<span class="chip">${text}</span>`; }
+
+    async function api(path, options = {}) {
+      const headers = new Headers(options.headers || {});
+      if (authToken) headers.set("Authorization", `Bearer ${authToken}`);
+      if (options.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+      const resp = await fetch(path, { ...options, headers });
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(text || `HTTP ${resp.status}`);
+      }
+      return resp.json();
+    }
+
+    async function login() {
+      els.loginError.textContent = "";
+      const body = JSON.stringify({ username: els.username.value, password: els.password.value });
+      try {
+        const resp = await api("/api/v1/auth/login", { method: "POST", body });
+        authToken = resp.token;
+        localStorage.setItem(tokenKey, authToken);
+        setAuthed(true);
+        await loadOverview();
+      } catch (err) {
+        els.loginError.textContent = "Sign in failed";
+      }
+    }
+
+    async function loadOverview() {
+      try {
+        const data = await api("/api/v1/admin/overview");
+        currentOverview = data;
+        renderOverview(data);
+      } catch (err) {
+        if (String(err.message).includes("401")) {
+          logout();
+          return;
+        }
+        els.summaryText.textContent = "Failed to load overview";
+      }
+    }
+
+    function renderOverview(data) {
+      const devices = data.devices || [];
+      const networks = data.networks || [];
+      const peers = data.online_peers || [];
+      const memberships = data.device_networks || {};
+
+      els.summaryText.textContent = `User ${data.user.user_id} · refreshed ${new Date().toLocaleTimeString()}`;
+      els.mDevices.textContent = String(devices.length);
+      els.mOnline.textContent = String(devices.filter(d => d.online).length);
+      els.mNetworks.textContent = String(networks.length);
+      els.mPeers.textContent = String(peers.length);
+
+      els.deviceRows.innerHTML = devices.map(d => {
+        const nets = (memberships[d.node_id] || []).map(n => n.name).join(", ") || "-";
+        return `<tr data-node="${d.node_id}">
+          <td><button data-node="${d.node_id}">${d.device_name || d.node_id}</button><div class="muted">${d.node_id}</div></td>
+          <td><span class="status ${d.online ? "online" : "offline"}"><span class="dot"></span>${d.online ? "online" : "offline"}</span></td>
+          <td>${fmtPublic(d.public_ip, d.public_port)}</td>
+          <td>${d.virtual_ip || "-"}</td>
+          <td>${nets}</td>
+        </tr>`;
+      }).join("");
+
+      els.networkRows.innerHTML = networks.map(n => {
+        const count = (data.network_devices[n.id] || []).length;
+        return `<tr><td>${n.name}</td><td>${n.subnet || "-"}</td><td>${count}</td></tr>`;
+      }).join("");
+
+      els.peerRows.innerHTML = peers.map(p => `
+        <tr><td>${p.node_id}</td><td>${fmtPublic(p.public_ip, p.public_port)}</td><td>${p.virtual_ip || "-"}</td></tr>
+      `).join("");
+
+      els.deviceRows.querySelectorAll("button[data-node]").forEach(btn => {
+        btn.addEventListener("click", () => loadDeviceDetail(btn.dataset.node));
+      });
+    }
+
+    async function loadDeviceDetail(nodeId) {
+      try {
+        const data = await api(`/api/v1/admin/devices/${encodeURIComponent(nodeId)}`);
+        renderDeviceDetail(data);
+      } catch (err) {
+        els.detailEmpty.textContent = "Failed to load node detail";
+        els.detailEmpty.classList.remove("hidden");
+        els.detailBody.classList.add("hidden");
+      }
+    }
+
+    function renderDeviceDetail(data) {
+      els.detailEmpty.classList.add("hidden");
+      els.detailBody.classList.remove("hidden");
+      const d = data.device;
+      const rows = [
+        ["Node ID", d.node_id],
+        ["Name", d.device_name || "-"],
+        ["Status", d.online ? "online" : "offline"],
+        ["Public", fmtPublic(d.public_ip, d.public_port)],
+        ["Virtual", d.virtual_ip || "-"],
+        ["Last heartbeat", d.last_heartbeat || "-"],
+        ["WS session", data.runtime?.ws_online ? "online" : "offline"],
+        ["Registry state", data.runtime?.registry_online ? "online" : "offline"],
+        ["Created", d.created_at || "-"],
+        ["Updated", d.updated_at || "-"]
+      ];
+      els.detailKv.innerHTML = rows.map(([k, v]) => `<div class="muted">${k}</div><div>${v}</div>`).join("");
+      els.detailNetworks.innerHTML = (data.networks || []).map(n => chip(`${n.name} (${n.subnet || "-"})`)).join("") || chip("No networks");
+      els.detailLan.innerHTML = (d.lan_ips || []).map(chip).join("") || chip("No LAN addresses");
+    }
+
+    function logout() {
+      authToken = "";
+      localStorage.removeItem(tokenKey);
+      setAuthed(false);
+    }
+
+    els.loginBtn.addEventListener("click", login);
+    els.logoutBtn.addEventListener("click", logout);
+    els.refreshBtn.addEventListener("click", loadOverview);
+    [els.username, els.password].forEach(el => el.addEventListener("keydown", ev => {
+      if (ev.key === "Enter") login();
+    }));
+
+    if (authToken) {
+      setAuthed(true);
+      loadOverview();
+    } else {
+      setAuthed(false);
+    }
+  </script>
+</body>
+</html>)HTML";
+
 std::string hex_encode(const std::vector<uint8_t>& data) {
     static constexpr char hex[] = "0123456789abcdef";
     std::string out;
@@ -470,6 +752,9 @@ http::response<http::string_body> HttpServer::handle_rest_request(
 
     try {
         // ── Public endpoints ──
+        if (path == "/admin" && method == "GET") {
+            return make_html_response(http::status::ok, kAdminHtml);
+        }
         if (path == "/api/v1/auth/register" && method == "POST") {
             return handle_register(req);
         }
@@ -554,6 +839,12 @@ http::response<http::string_body> HttpServer::handle_rest_request(
                 }
             }
             return make_json_response(http::status::ok, arr);
+        }
+        if (path == "/api/v1/admin/overview" && method == "GET") {
+            return handle_admin_overview(req, user_id);
+        }
+        if (path.rfind("/api/v1/admin/devices/", 0) == 0 && method == "GET") {
+            return handle_admin_device_detail(req, path.substr(std::string("/api/v1/admin/devices/").size()), user_id);
         }
 
     } catch (const std::exception& e) {
@@ -739,6 +1030,103 @@ http::response<http::string_body> HttpServer::handle_health(
     return make_json_response(http::status::ok, {
         {"status", "ok"},
         {"online_devices", session_mgr_.onlineCount()}
+    });
+}
+
+http::response<http::string_body> HttpServer::handle_admin_overview(
+    const http::request<http::string_body>& req, int64_t user_id)
+{
+    auto devices = device_svc_.list_user_devices(user_id);
+    auto networks = network_svc_.list_user_networks(user_id);
+
+    nlohmann::json device_networks = nlohmann::json::object();
+    nlohmann::json network_devices = nlohmann::json::object();
+    for (const auto& network : networks) {
+        auto members = network_svc_.get_network_devices(network.id);
+        nlohmann::json member_ids = nlohmann::json::array();
+        for (const auto& member : members) {
+            device_networks[member.node_id].push_back({
+                {"id", network.id},
+                {"name", network.name},
+                {"subnet", network.subnet}
+            });
+            member_ids.push_back(member.node_id);
+        }
+        network_devices[std::to_string(network.id)] = member_ids;
+    }
+
+    nlohmann::json peers = nlohmann::json::array();
+    for (const auto& device : devices) {
+        auto node = node_registry_.findNode(device.node_id);
+        if (node.has_value() && session_mgr_.hasSession(device.node_id)) {
+            peers.push_back(node->to_peer_json());
+        }
+    }
+
+    nlohmann::json device_arr = nlohmann::json::array();
+    for (const auto& device : devices) {
+        device_arr.push_back(device.to_json());
+    }
+    nlohmann::json network_arr = nlohmann::json::array();
+    for (const auto& network : networks) {
+        network_arr.push_back(network.to_json());
+    }
+
+    return make_json_response(http::status::ok, {
+        {"user", {{"user_id", user_id}}},
+        {"devices", device_arr},
+        {"networks", network_arr},
+        {"online_peers", peers},
+        {"device_networks", device_networks},
+        {"network_devices", network_devices},
+        {"health", {
+            {"status", "ok"},
+            {"online_sessions", session_mgr_.onlineCount()},
+            {"online_registry_nodes", node_registry_.onlineCount()}
+        }}
+    });
+}
+
+http::response<http::string_body> HttpServer::handle_admin_device_detail(
+    const http::request<http::string_body>& req, const std::string& node_id, int64_t user_id)
+{
+    auto device = device_svc_.get_device(node_id);
+    if (!device.has_value()) {
+        return make_error_response(http::status::not_found, "Device not found");
+    }
+    if (device->user_id != user_id) {
+        return make_error_response(http::status::forbidden, "Not your device");
+    }
+
+    auto networks = network_svc_.list_user_networks(user_id);
+    nlohmann::json membership = nlohmann::json::array();
+    for (const auto& network : networks) {
+        auto members = network_svc_.get_network_devices(network.id);
+        auto it = std::find_if(members.begin(), members.end(), [&](const Device& member) {
+            return member.node_id == node_id;
+        });
+        if (it != members.end()) {
+            membership.push_back(network.to_json());
+        }
+    }
+
+    nlohmann::json runtime = {
+        {"ws_online", session_mgr_.hasSession(node_id)}
+    };
+    auto node = node_registry_.findNode(node_id);
+    if (node.has_value()) {
+        runtime["registry_online"] = node->online;
+        runtime["runtime_public_ip"] = node->public_ip;
+        runtime["runtime_public_port"] = node->public_port;
+        runtime["runtime_virtual_ip"] = node->virtual_ip;
+        runtime["runtime_network_id"] = node->network_id;
+        runtime["runtime_local_addrs"] = node->local_addrs;
+    }
+
+    return make_json_response(http::status::ok, {
+        {"device", device->to_json()},
+        {"networks", membership},
+        {"runtime", runtime}
     });
 }
 
@@ -966,6 +1354,17 @@ http::response<http::string_body> HttpServer::make_json_response(
     res.set(http::field::server, "NATMesh-Server/0.1");
     res.set(http::field::content_type, "application/json");
     res.body() = body.dump();
+    res.prepare_payload();
+    return res;
+}
+
+http::response<http::string_body> HttpServer::make_html_response(
+    http::status status, const std::string& body)
+{
+    http::response<http::string_body> res{status, 11};
+    res.set(http::field::server, "NATMesh-Server/0.1");
+    res.set(http::field::content_type, "text/html; charset=utf-8");
+    res.body() = body;
     res.prepare_payload();
     return res;
 }

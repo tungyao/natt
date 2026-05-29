@@ -67,11 +67,14 @@ private:
     http::response<http::string_body> handle_list_network_devices(const http::request<http::string_body>& req, int64_t network_id);
 
     http::response<http::string_body> handle_ws_token(const http::request<http::string_body>& req, int64_t user_id);
+    http::response<http::string_body> handle_admin_overview(const http::request<http::string_body>& req, int64_t user_id);
+    http::response<http::string_body> handle_admin_device_detail(const http::request<http::string_body>& req, const std::string& node_id, int64_t user_id);
 
     http::response<http::string_body> handle_health(const http::request<http::string_body>& req);
 
     // Helpers
     http::response<http::string_body> make_json_response(http::status status, const nlohmann::json& body);
+    http::response<http::string_body> make_html_response(http::status status, const std::string& body);
     http::response<http::string_body> make_error_response(http::status status, const std::string& message);
     std::optional<auth::JwtPayload> authenticate(const http::request<http::string_body>& req);
 
