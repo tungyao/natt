@@ -76,12 +76,12 @@ HttpServer::HttpServer(net::io_context& ioc,
     heartbeat_monitor_->setTimeoutCallback(
         [this](const std::string& node_id) {
             spdlog::warn("Heartbeat timeout, removing node_id={}", node_id);
+            auto node = node_registry_.findNode(node_id);
             node_registry_.removeNode(node_id);
             session_mgr_.removeSession(node_id);
             device_svc_.set_offline(node_id);
 
             // Notify network peers about the offline node
-            auto node = node_registry_.findNode(node_id);
             if (node.has_value()) {
                 auto peers = node_registry_.listNetworkNodes(node->network_id);
                 nlohmann::json peer_list = {{"type", "peer_list"}, {"peers", nlohmann::json::array()}};

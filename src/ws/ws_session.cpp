@@ -200,14 +200,14 @@ void WsSession::handle_message(const std::string& data) {
         // ── Handle heartbeat ──
         if (type == "heartbeat") {
             last_heartbeat_ = std::chrono::steady_clock::now();
-            nlohmann::json response = {{"type", "pong"}};
-            send_json(response.dump());
-            return;
         }
 
         // ── Delegate to message handler ──
         if (msg_handler_) {
             msg_handler_(shared_from_this(), node_id_, json);
+        } else if (type == "heartbeat") {
+            nlohmann::json response = {{"type", "pong"}};
+            send_json(response.dump());
         }
 
     } catch (const std::exception& e) {
