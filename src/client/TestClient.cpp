@@ -191,11 +191,6 @@ bool TestClient::send_update_addr() {
         }
     }
 
-    std::string local_addr_str = "127.0.0.1:" + std::to_string(opts_.udp_port);
-    if (local_addrs.empty()) {
-        local_addrs.push_back(local_addr_str);
-    }
-
     nlohmann::json update = {
         {"type", "update_addr"},
         {"public_ip", stun_result_.public_ip},

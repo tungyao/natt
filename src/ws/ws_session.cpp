@@ -202,6 +202,9 @@ void WsSession::handle_message(const std::string& data) {
             last_heartbeat_ = std::chrono::steady_clock::now();
         }
 
+        // Any authenticated control-plane message counts as session activity.
+        last_heartbeat_ = std::chrono::steady_clock::now();
+
         // ── Delegate to message handler ──
         if (msg_handler_) {
             msg_handler_(shared_from_this(), node_id_, json);

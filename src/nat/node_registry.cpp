@@ -102,7 +102,7 @@ std::vector<NodeInfo> NodeRegistry::listNetworkNodes(const std::string& network_
     std::shared_lock<std::shared_mutex> lock(mutex_);
     std::vector<NodeInfo> result;
     for (const auto& [id, info] : nodes_) {
-        if (info.network_id == network_id && info.online) {
+        if (info.network_id == network_id && info.session_online) {
             result.push_back(info);
         }
     }
@@ -114,9 +114,7 @@ std::vector<NodeInfo> NodeRegistry::listAllNodes() const {
     std::vector<NodeInfo> result;
     result.reserve(nodes_.size());
     for (const auto& [id, info] : nodes_) {
-        if (info.online) {
-            result.push_back(info);
-        }
+        result.push_back(info);
     }
     return result;
 }
@@ -130,14 +128,14 @@ void NodeRegistry::removeNode(const std::string& node_id) {
 bool NodeRegistry::isOnline(const std::string& node_id) const {
     std::shared_lock<std::shared_mutex> lock(mutex_);
     auto it = nodes_.find(node_id);
-    return it != nodes_.end() && it->second.online;
+    return it != nodes_.end() && it->second.session_online;
 }
 
 size_t NodeRegistry::onlineCount() const {
     std::shared_lock<std::shared_mutex> lock(mutex_);
     size_t count = 0;
     for (const auto& [id, info] : nodes_) {
-        if (info.online) ++count;
+        if (info.session_online) ++count;
     }
     return count;
 }

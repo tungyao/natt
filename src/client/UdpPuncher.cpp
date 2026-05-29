@@ -145,6 +145,22 @@ void UdpPuncher::handle_receive(boost::system::error_code ec, std::size_t bytes_
         auto to_node_id = json.value("to_node_id", std::string());
         auto timestamp = json.value("timestamp", int64_t(0));
 
+        const bool is_p2p_message =
+            type == "punch" || type == "punch_ack" || type == "p2p_packet";
+        if (is_p2p_message) {
+            if (!to_node_id.empty() && to_node_id != my_node_id_) {
+                spdlog::debug("UdpPuncher: ignoring {} for node_id={} (expected {})",
+                              type, to_node_id, my_node_id_);
+                do_receive();
+                return;
+            }
+            if (!from_node_id.empty() && from_node_id == my_node_id_) {
+                spdlog::debug("UdpPuncher: ignoring looped-back {} from self", type);
+                do_receive();
+                return;
+            }
+        }
+
         // Notify packet callback
         if (packet_cb_) {
             packet_cb_(from_node_id, type, timestamp, remote_);

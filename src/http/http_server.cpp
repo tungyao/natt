@@ -1425,6 +1425,8 @@ void HttpServer::handle_websocket_upgrade(tcp::socket&& socket,
                     msg_dispatcher_.dispatch(session, node_id, msg);
                 } else if (type == "heartbeat") {
                     msg_dispatcher_.dispatch(session, node_id, msg);
+                } else if (type == "transport_status") {
+                    msg_dispatcher_.dispatch(session, node_id, msg);
                 } else if (type == "connect_peer") {
                     msg_dispatcher_.dispatch(session, node_id, msg);
                 } else if (type == "tun_packet") {
@@ -1443,6 +1445,7 @@ void HttpServer::handle_websocket_upgrade(tcp::socket&& socket,
                 spdlog::info("WebSocket disconnected: node_id={} (waiting for heartbeat timeout)", node_id);
                 node_registry_.updateSessionState(node_id, false, "grace", "ws_disconnected");
                 session_mgr_.removeSession(node_id);
+                device_svc_.set_offline(node_id);
 
                 // Broadcast updated peer list (node is still in registry but offline session)
                 auto node = node_registry_.findNode(node_id);
