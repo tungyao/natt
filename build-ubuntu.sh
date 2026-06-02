@@ -51,6 +51,7 @@ install_deps() {
         build-essential \
         cmake \
         git \
+        perl \
         pkg-config \
         g++ 2>&1 | tail -1
 
@@ -75,6 +76,8 @@ install_deps() {
     sudo apt-get install -y -qq \
         libspdlog-dev \
         libfmt-dev 2>&1 | tail -1
+
+    log_info "(OpenSSL 由 CMake 从 gh-proxy.org 镜像拉取并本地构建, 无需安装 libssl-dev)"
 
     log_ok "系统依赖安装完成"
 }

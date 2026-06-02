@@ -63,6 +63,8 @@ $Packages = @(
     "mingw-w64-ucrt-x86_64-sqlite3"
     "mingw-w64-ucrt-x86_64-cmake"
     "mingw-w64-ucrt-x86_64-make"
+    "mingw-w64-ucrt-x86_64-perl"
+    "mingw-w64-ucrt-x86_64-git"
 )
 
 $Missing = @()
