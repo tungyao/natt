@@ -196,6 +196,7 @@ else()
         nlohmann_json
         GIT_REPOSITORY https://gh-proxy.org/https://github.com/nlohmann/json.git
         GIT_TAG v3.11.3
+	GIT_SHALLOW    TRUE
     )
     FetchContent_MakeAvailable(nlohmann_json)
     message(STATUS "nlohmann_json: ${nlohmann_json_SOURCE_DIR}")
@@ -215,6 +216,7 @@ else()
         spdlog
         GIT_REPOSITORY https://gh-proxy.org/https://github.com/gabime/spdlog.git
         GIT_TAG v1.14.1
+	GIT_SHALLOW    TRUE
     )
     FetchContent_MakeAvailable(spdlog)
     message(STATUS "spdlog: ${spdlog_SOURCE_DIR}")
