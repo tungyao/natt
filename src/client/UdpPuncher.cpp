@@ -190,6 +190,24 @@ void UdpPuncher::handle_receive(boost::system::error_code ec, std::size_t bytes_
                 peer_endpoint_ = remote_;
                 peer_endpoint_known_ = true;
                 punch_path_ready_ = true;
+                // Dynamically add the peer's real source address as a punch target
+                // This handles cases where NAT port differs from STUN-reported port
+                auto remote_target = PunchTarget{
+                    remote_.address().to_string(),
+                    remote_.port()
+                };
+                bool found = false;
+                for (const auto& t : targets_) {
+                    if (t.ip == remote_target.ip && t.port == remote_target.port) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    targets_.push_back(remote_target);
+                    spdlog::info("UdpPuncher: discovered peer endpoint {}:{} → added as target",
+                                 remote_target.ip, remote_target.port);
+                }
             }
 
             sendAck(my_node_id_, from_node_id, remote_);
@@ -203,6 +221,24 @@ void UdpPuncher::handle_receive(boost::system::error_code ec, std::size_t bytes_
             peer_endpoint_ = remote_;
             peer_endpoint_known_ = true;
             punch_path_ready_ = true;
+
+            // Dynamically add the peer's real source address as a punch target
+            auto ack_target = PunchTarget{
+                remote_.address().to_string(),
+                remote_.port()
+            };
+            bool found = false;
+            for (const auto& t : targets_) {
+                if (t.ip == ack_target.ip && t.port == ack_target.port) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                targets_.push_back(ack_target);
+                spdlog::info("UdpPuncher: discovered peer ack endpoint {}:{} → added as target",
+                             ack_target.ip, ack_target.port);
+            }
 
             if (noise_enabled_) {
                 punching_ = false;

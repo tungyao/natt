@@ -87,6 +87,7 @@ private:
     // Control channel
     bool prepareNoiseIdentity();
     bool connect_control_channel(bool reconnecting);
+    std::vector<std::string> detect_local_addrs() const;
     bool send_update_addr();
     bool send_connect_peer_request();
     void install_ws_callbacks(const std::shared_ptr<WsClient>& ws);

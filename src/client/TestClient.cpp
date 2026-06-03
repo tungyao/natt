@@ -6,6 +6,18 @@
 #include <sstream>
 #include <chrono>
 
+#if defined(_WIN32)
+  #define WIN32_LEAN_AND_MEAN
+  #include <winsock2.h>
+  #include <ws2tcpip.h>
+  #include <iphlpapi.h>
+  #pragma comment(lib, "iphlpapi.lib")
+#else
+  #include <ifaddrs.h>
+  #include <arpa/inet.h>
+  #include <netinet/in.h>
+#endif
+
 namespace {
 
 std::string hex_encode(const std::vector<uint8_t>& data) {
@@ -201,17 +213,65 @@ bool TestClient::connect_control_channel(bool reconnecting) {
     return true;
 }
 
-bool TestClient::send_update_addr() {
-    if (!ws_ || !ws_->isConnected()) return false;
+std::vector<std::string> TestClient::detect_local_addrs() const {
+    std::vector<std::string> addrs;
+    auto port_str = std::to_string(opts_.udp_port);
 
-    std::vector<std::string> local_addrs;
+#if defined(_WIN32)
+    ULONG buf_len = 0;
+    GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER,
+                         nullptr, nullptr, &buf_len);
+    std::vector<char> buf(buf_len);
+    auto *adapters = reinterpret_cast<PIP_ADAPTER_ADDRESSES>(buf.data());
+    if (GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER,
+                             nullptr, adapters, &buf_len) == NO_ERROR) {
+        for (auto *adapter = adapters; adapter; adapter = adapter->Next) {
+            for (auto *addr = adapter->FirstUnicastAddress; addr; addr = addr->Next) {
+                auto *sa = reinterpret_cast<struct sockaddr_in*>(addr->Address.lpSockaddr);
+                char ip[INET_ADDRSTRLEN];
+                inet_ntop(AF_INET, &sa->sin_addr, ip, sizeof(ip));
+                std::string ip_str(ip);
+                if (ip_str != "127.0.0.1") {
+                    addrs.push_back(ip_str + ":" + port_str);
+                }
+            }
+        }
+    }
+#else
+    struct ifaddrs *ifaddr = nullptr;
+    if (getifaddrs(&ifaddr) == 0) {
+        for (auto *ifa = ifaddr; ifa; ifa = ifa->ifa_next) {
+            if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET) continue;
+            auto *addr = reinterpret_cast<struct sockaddr_in*>(ifa->ifa_addr);
+            char ip[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET, &addr->sin_addr, ip, sizeof(ip));
+            std::string ip_str(ip);
+            if (ip_str != "127.0.0.1") {
+                addrs.push_back(ip_str + ":" + port_str);
+            }
+        }
+        freeifaddrs(ifaddr);
+    }
+#endif
+
+    // Also include manually specified local addresses
     if (!opts_.local_addr.empty()) {
         std::stringstream ss(opts_.local_addr);
         std::string addr;
         while (std::getline(ss, addr, ',')) {
-            local_addrs.push_back(addr);
+            if (std::find(addrs.begin(), addrs.end(), addr) == addrs.end()) {
+                addrs.push_back(addr);
+            }
         }
     }
+
+    return addrs;
+}
+
+bool TestClient::send_update_addr() {
+    if (!ws_ || !ws_->isConnected()) return false;
+
+    auto local_addrs = detect_local_addrs();
 
     nlohmann::json update = {
         {"type", "update_addr"},
@@ -227,9 +287,10 @@ bool TestClient::send_update_addr() {
         return false;
     }
 
-    spdlog::info("Sent update_addr: public={}:{}",
+    spdlog::info("Sent update_addr: public={}:{}, {} local addr(s)",
                  update["public_ip"].get<std::string>(),
-                 update["public_port"].get<int>());
+                 update["public_port"].get<int>(),
+                 update["local_addrs"].size());
     return true;
 }
 
@@ -463,7 +524,14 @@ StunResult TestClient::queryStun(const std::string& stun_host, uint16_t stun_por
         sock.open(udp::v4());
         sock.set_option(net::socket_base::reuse_address(true));
         if (bind_port != 0) {
-            sock.bind(udp::endpoint(udp::v4(), bind_port));
+            boost::system::error_code bind_ec;
+            sock.bind(udp::endpoint(udp::v4(), bind_port), bind_ec);
+            if (bind_ec) {
+                spdlog::warn("STUN: failed to bind to port {}, falling back to ephemeral: {}",
+                             bind_port, bind_ec.message());
+            } else {
+                spdlog::debug("STUN: bound to local port {}", bind_port);
+            }
         }
 
         nlohmann::json req = {
