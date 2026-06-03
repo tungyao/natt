@@ -5,10 +5,20 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+# ── Platform-specific setup ───────────────────────────────────
+if(WIN32)
+    set(PLATFORM_TUN_SRC src/tun/TunWindows.cpp)
+    set(PLATFORM_LIBS ws2_32 iphlpapi mswsock)
+    add_compile_definitions(_WIN32_WINNT=0x0601)  # Windows 7+ for netioapi/ws2tcpip
+else()
+    set(PLATFORM_TUN_SRC src/tun/TunLinux.cpp)
+    set(PLATFORM_LIBS)
+endif()
+
 # ── Dependencies ──────────────────────────────────────────────
 include(cmake/dependencies.cmake)
 
-# ── Library sources (shared between executables) ─────────────
+# ── Common library sources ────────────────────────────────────
 set(LIB_SOURCES
     src/config/config.cpp
     src/crypto/NoiseProtocol.cpp
@@ -28,14 +38,6 @@ set(LIB_SOURCES
     src/nat/node_registry.cpp
     src/nat/message_dispatcher.cpp
     src/nat/heartbeat_monitor.cpp
-    src/stun/StunServer.cpp
-    src/client/WsClient.cpp
-    src/client/UdpPuncher.cpp
-    src/client/TestClient.cpp
-    src/relay/RelayRegistry.cpp
-    src/relay/RelayServer.cpp
-    src/ipam/IpAllocator.cpp
-    src/tun/TunLinux.cpp
 )
 
 set(LIB_HEADERS
@@ -60,14 +62,6 @@ set(LIB_HEADERS
     src/nat/node_registry.h
     src/nat/message_dispatcher.h
     src/nat/heartbeat_monitor.h
-    src/stun/StunServer.h
-    src/client/WsClient.h
-    src/client/UdpPuncher.h
-    src/client/TestClient.h
-    src/relay/RelayRegistry.h
-    src/relay/RelayServer.h
-    src/ipam/IpAllocator.h
-    src/tun/TunInterface.h
 )
 
 # ── Common include + link ────────────────────────────────────
@@ -82,90 +76,52 @@ set(COMMON_LIBS
     OpenSSL::Crypto
     nlohmann_json::nlohmann_json
     spdlog::spdlog
+    ${PLATFORM_LIBS}
 )
 
-if(WIN32)
-    list(APPEND COMMON_LIBS ws2_32 iphlpapi mswsock)
-    add_compile_definitions(_WIN32_WINNT=0x0601)  # Windows 7+ for netioapi/ws2tcpip
-endif()
+macro(setup_target TARGET)
+    target_include_directories(${TARGET} PRIVATE ${COMMON_INCLUDES})
+    target_link_libraries(${TARGET} PRIVATE ${COMMON_LIBS})
+    target_compile_options(${TARGET} PRIVATE -Wall -Wextra -Wpedantic -Wno-unused-parameter)
+endmacro()
 
 # ── natmesh-server (with DB, yaml-cpp) ──────────────────────
-set(SERVER_SOURCES ${LIB_SOURCES})  # copy
-list(REMOVE_ITEM SERVER_SOURCES
-    src/client/WsClient.cpp
-    src/client/UdpPuncher.cpp
-    src/client/TestClient.cpp
+add_executable(natmesh-server
+    ${LIB_SOURCES}
     src/stun/StunServer.cpp
     src/relay/RelayRegistry.cpp
     src/relay/RelayServer.cpp
-    src/tun/TunLinux.cpp
-)
-# Re-add ipam (needed by server) but keep tun/client removed
-list(APPEND SERVER_SOURCES
     src/ipam/IpAllocator.cpp
+    ${PLATFORM_TUN_SRC}
+    cmd/server/main.cpp
+    ${LIB_HEADERS}
 )
-if(WIN32)
-    list(APPEND SERVER_SOURCES src/tun/TunWindows.cpp)
-else()
-    list(APPEND SERVER_SOURCES src/tun/TunLinux.cpp)
-endif()
-list(APPEND SERVER_SOURCES cmd/server/main.cpp)
-
-add_executable(natmesh-server ${SERVER_SOURCES} ${LIB_HEADERS})
-target_include_directories(natmesh-server PRIVATE ${COMMON_INCLUDES})
-target_link_libraries(natmesh-server PRIVATE ${COMMON_LIBS} yaml-cpp sqlite3)
-target_compile_options(natmesh-server PRIVATE -Wall -Wextra -Wpedantic -Wno-unused-parameter)
+setup_target(natmesh-server)
+target_link_libraries(natmesh-server PRIVATE yaml-cpp sqlite3)
 
 # ── stun_server ──────────────────────────────────────────────
-set(STUN_SOURCES
+add_executable(stun_server
     cmd/stun_server/main.cpp
     src/stun/StunServer.cpp
 )
-
-add_executable(stun_server ${STUN_SOURCES} src/stun/StunServer.h)
-target_include_directories(stun_server PRIVATE ${COMMON_INCLUDES})
-target_link_libraries(stun_server PRIVATE ${COMMON_LIBS})
-target_compile_options(stun_server PRIVATE -Wall -Wextra -Wpedantic -Wno-unused-parameter)
+setup_target(stun_server)
 
 # ── test_client ──────────────────────────────────────────────
-set(CLIENT_SOURCES
+add_executable(test_client
     cmd/test_client/main.cpp
     src/crypto/NoiseProtocol.cpp
     src/client/WsClient.cpp
     src/client/UdpPuncher.cpp
     src/client/TestClient.cpp
     src/stun/StunServer.cpp
+    ${PLATFORM_TUN_SRC}
 )
-
-if(WIN32)
-    list(APPEND CLIENT_SOURCES src/tun/TunWindows.cpp)
-else()
-    list(APPEND CLIENT_SOURCES src/tun/TunLinux.cpp)
-endif()
-
-# Need StunServer.h for STUN query (included from TestClient)
-add_executable(test_client ${CLIENT_SOURCES}
-    src/client/WsClient.h
-    src/client/UdpPuncher.h
-    src/client/TestClient.h
-    src/stun/StunServer.h
-    src/tun/TunInterface.h
-)
-target_include_directories(test_client PRIVATE ${COMMON_INCLUDES})
-target_link_libraries(test_client PRIVATE ${COMMON_LIBS})
-target_compile_options(test_client PRIVATE -Wall -Wextra -Wpedantic -Wno-unused-parameter)
+setup_target(test_client)
 
 # ── relay_server ─────────────────────────────────────────────
-set(RELAY_SOURCES
+add_executable(relay_server
     cmd/relay_server/main.cpp
     src/relay/RelayRegistry.cpp
     src/relay/RelayServer.cpp
 )
-
-add_executable(relay_server ${RELAY_SOURCES}
-    src/relay/RelayRegistry.h
-    src/relay/RelayServer.h
-)
-target_include_directories(relay_server PRIVATE ${COMMON_INCLUDES})
-target_link_libraries(relay_server PRIVATE ${COMMON_LIBS})
-target_compile_options(relay_server PRIVATE -Wall -Wextra -Wpedantic -Wno-unused-parameter)
+setup_target(relay_server)

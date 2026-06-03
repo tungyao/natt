@@ -95,18 +95,33 @@ if(_openssl_jobs EQUAL 0)
     set(_openssl_jobs 4)
 endif()
 
+# Find GNU Make (needed for OpenSSL's own build system — always generates Makefiles)
+find_program(_openssl_make NAMES gmake make mingw32-make REQUIRED)
+message(STATUS "OpenSSL build tool: ${_openssl_make}")
+
+# On Windows, `Configure` is a Perl script and can't be executed directly
+# from cmd.exe / PowerShell — invoke perl explicitly.
+if(WIN32 AND NOT MSVC)
+    find_program(_openssl_perl NAMES perl REQUIRED)
+    set(_openssl_configure_cmd "${_openssl_perl}" "${_openssl_src_dir}/Configure")
+    message(STATUS "OpenSSL Perl interpreter: ${_openssl_perl}")
+else()
+    set(_openssl_configure_cmd "${_openssl_src_dir}/Configure")
+endif()
+
 include(ExternalProject)
 ExternalProject_Add(openssl_external
     SOURCE_DIR          "${_openssl_src_dir}"
-    CONFIGURE_COMMAND   "${_openssl_src_dir}/Configure"
+    CONFIGURE_COMMAND   ${_openssl_configure_cmd}
                         ${_openssl_configure_target}
                         --prefix=${_openssl_prefix}
                         --openssldir=${_openssl_prefix}/ssl
+                        --libdir=lib
                         no-shared
                         no-tests
                         no-ui-console
-    BUILD_COMMAND       make -j${_openssl_jobs}
-    INSTALL_COMMAND     make install_sw
+    BUILD_COMMAND       "${_openssl_make}" -j${_openssl_jobs}
+    INSTALL_COMMAND     "${_openssl_make}" install_sw
     BUILD_IN_SOURCE     1
     BUILD_ALWAYS        0
     USES_TERMINAL_BUILD     TRUE
@@ -134,15 +149,20 @@ file(MAKE_DIRECTORY "${_openssl_prefix}/include")
 file(MAKE_DIRECTORY "${_openssl_prefix}/lib")
 file(MAKE_DIRECTORY "${_openssl_prefix}/lib64")
 
-# Pick a default; the link step resolves the real path.
-# Prefer lib64 on 64-bit Unix because that's what OpenSSL 3.x ships
-# by default there.
+# OpenSSL Configure is invoked with --libdir=lib so the static libs
+# always land in lib/ regardless of platform bitness.
 if(WIN32)
-    set(_openssl_crypto_lib "${_openssl_prefix}/lib/libcrypto.lib")
-    set(_openssl_ssl_lib    "${_openssl_prefix}/lib/libssl.lib")
+    if(MSVC)
+        set(_openssl_crypto_lib "${_openssl_prefix}/lib/libcrypto.lib")
+        set(_openssl_ssl_lib    "${_openssl_prefix}/lib/libssl.lib")
+    else()
+        # MinGW / MSYS2 — OpenSSL Configure outputs .a even on Windows
+        set(_openssl_crypto_lib "${_openssl_prefix}/lib/libcrypto.a")
+        set(_openssl_ssl_lib    "${_openssl_prefix}/lib/libssl.a")
+    endif()
 elseif(CMAKE_SIZEOF_VOID_P EQUAL 8)
-    set(_openssl_crypto_lib "${_openssl_prefix}/lib64/libcrypto.a")
-    set(_openssl_ssl_lib    "${_openssl_prefix}/lib64/libssl.a")
+    set(_openssl_crypto_lib "${_openssl_prefix}/lib/libcrypto.a")
+    set(_openssl_ssl_lib    "${_openssl_prefix}/lib/libssl.a")
 else()
     set(_openssl_crypto_lib "${_openssl_prefix}/lib/libcrypto.a")
     set(_openssl_ssl_lib    "${_openssl_prefix}/lib/libssl.a")
@@ -154,7 +174,12 @@ set_target_properties(OpenSSL::Crypto PROPERTIES
     IMPORTED_LOCATION             "${_openssl_crypto_lib}"
     INTERFACE_INCLUDE_DIRECTORIES "${_openssl_prefix}/include"
 )
-if(UNIX AND NOT APPLE)
+if(WIN32)
+    # OpenSSL's e_capi / winstore_store use Windows CryptoAPI (Cert* functions)
+    set_target_properties(OpenSSL::Crypto PROPERTIES
+        INTERFACE_LINK_LIBRARIES "crypt32;ws2_32;advapi32"
+    )
+elseif(UNIX AND NOT APPLE)
     set_target_properties(OpenSSL::Crypto PROPERTIES
         INTERFACE_LINK_LIBRARIES "pthread;dl"
     )
@@ -220,6 +245,21 @@ else()
     )
     FetchContent_MakeAvailable(spdlog)
     message(STATUS "spdlog: ${spdlog_SOURCE_DIR}")
+endif()
+
+# ── MSYS2 / MinGW cmake config path hint ─────────────────────
+# MSYS2 installs packages under /ucrt64/, /mingw64/, etc. — add
+# those to CMAKE_PREFIX_PATH so find_package can discover them.
+if(WIN32 AND NOT MSVC)
+    if(DEFINED ENV{MSYSTEM_PREFIX} AND EXISTS "$ENV{MSYSTEM_PREFIX}/lib/cmake")
+        list(APPEND CMAKE_PREFIX_PATH "$ENV{MSYSTEM_PREFIX}")
+    else()
+        foreach(_pfx /ucrt64 /mingw64 /mingw32 /clang64)
+            if(EXISTS "${_pfx}/lib/cmake")
+                list(APPEND CMAKE_PREFIX_PATH "${_pfx}")
+            endif()
+        endforeach()
+    endif()
 endif()
 
 # ── yaml-cpp (system) ──────────────────────────────────────────
