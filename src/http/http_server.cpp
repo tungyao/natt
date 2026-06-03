@@ -1442,6 +1442,17 @@ void HttpServer::handle_websocket_upgrade(tcp::socket&& socket,
             // without losing their state.
             [this](const std::string& node_id) {
                 if (shutting_down_) return;
+
+                // Guard: if a new session is already registered for this node_id,
+                // this is a stale callback from a previous WsSession whose async
+                // operations (do_read error, check_heartbeat timer) are still
+                // pending. Do not overwrite the active session's state.
+                if (session_mgr_.hasSession(node_id)) {
+                    spdlog::debug("Ignoring stale disconnect for node_id={} "
+                                  "(new session already registered)", node_id);
+                    return;
+                }
+
                 spdlog::info("WebSocket disconnected: node_id={} (waiting for heartbeat timeout)", node_id);
                 node_registry_.updateSessionState(node_id, false, "grace", "ws_disconnected");
                 session_mgr_.removeSession(node_id);
