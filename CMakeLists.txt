@@ -122,6 +122,7 @@ add_executable(test_client
     ${PLATFORM_TUN_SRC}
 )
 setup_target(test_client)
+target_link_libraries(test_client PRIVATE yaml-cpp)
 
 # ── relay_server ─────────────────────────────────────────────
 add_executable(relay_server

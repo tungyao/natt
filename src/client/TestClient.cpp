@@ -5,6 +5,7 @@
 #include <thread>
 #include <sstream>
 #include <chrono>
+#include <fstream>
 
 #if defined(_WIN32)
   #define WIN32_LEAN_AND_MEAN
@@ -149,7 +150,23 @@ bool TestClient::connect_control_channel(bool reconnecting) {
     }
 
     auto ws = std::make_shared<WsClient>();
-    if (!ws->connect(ctrl_host_, ctrl_port_, ctrl_path_)) {
+    bool connected;
+    if (opts_.use_ssl) {
+        std::string cert_pem;
+        if (!opts_.cert_file.empty()) {
+            std::ifstream ifs(opts_.cert_file);
+            if (!ifs.is_open()) {
+                spdlog::error("Cannot open CA cert file: {}", opts_.cert_file);
+                return false;
+            }
+            cert_pem.assign(std::istreambuf_iterator<char>(ifs),
+                            std::istreambuf_iterator<char>());
+        }
+        connected = ws->connectSecure(ctrl_host_, ctrl_port_, ctrl_path_, cert_pem);
+    } else {
+        connected = ws->connect(ctrl_host_, ctrl_port_, ctrl_path_);
+    }
+    if (!connected) {
         return false;
     }
 
@@ -418,27 +435,47 @@ bool TestClient::run(const Options& opts) {
     auto ctrl = opts.control_url;
     ctrl_host_ = ctrl;
     ctrl_port_ = "8080";
-    auto colon = ctrl.rfind(':');
-    if (colon != std::string::npos) {
-        ctrl_port_ = ctrl.substr(colon + 1);
-        ctrl_host_ = ctrl.substr(0, colon);
-    }
-    // Strip ws:// prefix
-    if (ctrl_host_.rfind("ws://", 0) == 0) {
-        ctrl_host_ = ctrl_host_.substr(5);
-        auto slash = ctrl_host_.find('/');
-        if (slash != std::string::npos) {
-            ctrl_path_ = ctrl_host_.substr(slash);
-            auto host_part = ctrl_host_.substr(0, slash);
-            auto port_colon = host_part.rfind(':');
-            if (port_colon != std::string::npos) {
-                ctrl_port_ = host_part.substr(port_colon + 1);
-                ctrl_host_ = host_part.substr(0, port_colon);
-            } else {
-                ctrl_host_ = host_part;
-            }
+    ctrl_path_ = "/api/v1/ws/nat";
+
+    // Detect wss:// or ws:// scheme and parse accordingly
+    if (ctrl.rfind("wss://", 0) == 0) {
+        opts_.use_ssl = true;
+        ctrl = ctrl.substr(6);
+        auto slash = ctrl.find('/');
+        auto host_part = (slash != std::string::npos) ? ctrl.substr(0, slash) : ctrl;
+        if (slash != std::string::npos) ctrl_path_ = ctrl.substr(slash);
+        auto port_colon = host_part.rfind(':');
+        if (port_colon != std::string::npos) {
+            ctrl_port_ = host_part.substr(port_colon + 1);
+            ctrl_host_ = host_part.substr(0, port_colon);
+        } else {
+            ctrl_host_ = host_part;
+            ctrl_port_ = "443";
+        }
+    } else if (ctrl.rfind("ws://", 0) == 0) {
+        ctrl = ctrl.substr(5);
+        auto slash = ctrl.find('/');
+        auto host_part = (slash != std::string::npos) ? ctrl.substr(0, slash) : ctrl;
+        if (slash != std::string::npos) ctrl_path_ = ctrl.substr(slash);
+        auto port_colon = host_part.rfind(':');
+        if (port_colon != std::string::npos) {
+            ctrl_port_ = host_part.substr(port_colon + 1);
+            ctrl_host_ = host_part.substr(0, port_colon);
+        } else {
+            ctrl_host_ = host_part;
+        }
+    } else {
+        // Plain host:port, no scheme — check opts.use_ssl or assume plain
+        auto colon = ctrl.rfind(':');
+        if (colon != std::string::npos) {
+            ctrl_port_ = ctrl.substr(colon + 1);
+            ctrl_host_ = ctrl.substr(0, colon);
         }
     }
+
+    spdlog::info("Control: {}://{}:{}{}",
+                 opts_.use_ssl ? "wss" : "ws",
+                 ctrl_host_, ctrl_port_, ctrl_path_);
     if (!connect_control_channel(false)) {
         spdlog::error("Failed to connect to control server");
         return false;

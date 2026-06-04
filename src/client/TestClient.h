@@ -41,6 +41,8 @@ public:
         std::string connect_node_id;  // empty = wait for incoming
         std::string local_addr;       // for local_addrs, separate by comma
         std::string relay_addr;       // e.g. "127.0.0.1:7000", empty = no relay fallback
+        bool use_ssl = false;         // connect via WSS (TLS)
+        std::string cert_file;        // CA certificate PEM file path for server verification
         bool enable_tun = false;      // enable TUN virtual interface
         std::string tun_name = "nat%d";
         int tun_mtu = 1300;
