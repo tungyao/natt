@@ -312,9 +312,8 @@ const char* kAdminHtml = R"HTML(<!doctype html>
       try {
         const data = await api("/api/v1/admin/cert-info");
         if (data.cert_pem) {
-          const lines = data.cert_pem.split("\n").slice(0, 3).join("\n");
           els.certInfo.innerHTML = `<div class="muted">Certificate: ${data.cert_file}</div>
-            <pre style="font-size:11px;margin:4px 0;color:var(--muted);">${lines}...</pre>`;
+            <pre style="font-size:11px;margin:4px 0;color:var(--muted);word-break:break-all;">${data.cert_pem}</pre>`;
         } else {
           els.certInfo.innerHTML = `<div class="muted">No certificate found at ${data.cert_file}</div>`;
         }
