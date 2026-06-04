@@ -35,6 +35,12 @@ struct AdminConfig {
     std::string password = "admin123456";
 };
 
+struct TlsConfig {
+    bool enabled = false;
+    std::string cert_file = "server.crt";
+    std::string key_file = "server.key";
+};
+
 struct IpamConfig {
     std::map<std::string, std::string> pools = {
         {"home", "10.0.0.0/16"},
@@ -49,6 +55,7 @@ struct Config {
     WebSocketConfig websocket;
     LogConfig logging;
     AdminConfig admin;
+    TlsConfig tls;
     IpamConfig ipam;
 
     static Config load(const std::string& path);

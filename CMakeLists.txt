@@ -22,6 +22,7 @@ include(cmake/dependencies.cmake)
 set(LIB_SOURCES
     src/config/config.cpp
     src/crypto/NoiseProtocol.cpp
+    src/crypto/CertGenerator.cpp
     src/repository/database.cpp
     src/repository/user_repo.cpp
     src/repository/device_repo.cpp
@@ -34,6 +35,7 @@ set(LIB_SOURCES
     src/service/peer_manager.cpp
     src/http/http_server.cpp
     src/ws/ws_session.cpp
+    src/ws/wss_session.cpp
     src/nat/session_manager.cpp
     src/nat/node_registry.cpp
     src/nat/message_dispatcher.cpp
@@ -43,6 +45,7 @@ set(LIB_SOURCES
 set(LIB_HEADERS
     src/config/config.h
     src/crypto/NoiseProtocol.h
+    src/crypto/CertGenerator.h
     src/model/user.h
     src/model/device.h
     src/model/network.h
@@ -58,6 +61,7 @@ set(LIB_HEADERS
     src/service/peer_manager.h
     src/http/http_server.h
     src/ws/ws_session.h
+    src/ws/wss_session.h
     src/nat/session_manager.h
     src/nat/node_registry.h
     src/nat/message_dispatcher.h
@@ -74,6 +78,7 @@ set(COMMON_LIBS
     Boost::headers
     Boost::system
     OpenSSL::Crypto
+    OpenSSL::SSL
     nlohmann_json::nlohmann_json
     spdlog::spdlog
     ${PLATFORM_LIBS}

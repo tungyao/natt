@@ -3,7 +3,9 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/beast/websocket.hpp>
+#include <boost/beast/ssl.hpp>
 #include <boost/asio.hpp>
+#include <boost/asio/ssl.hpp>
 #include <memory>
 #include <string>
 #include <functional>
@@ -28,6 +30,7 @@
 namespace beast = boost::beast;
 namespace http = beast::http;
 namespace net = boost::asio;
+namespace ssl = net::ssl;
 using tcp = net::ip::tcp;
 
 class HttpServer : public std::enable_shared_from_this<HttpServer> {
@@ -80,6 +83,15 @@ private:
 
     // WebSocket handler
     void handle_websocket_upgrade(tcp::socket&& socket, http::request<http::string_body> req);
+
+    // TLS
+    void handle_tls_connection(tcp::socket socket);
+    void handle_wss_upgrade(std::shared_ptr<beast::ssl_stream<beast::tcp_stream>> ssl_sock,
+                            http::request<http::string_body> req);
+
+    // Cert generation
+    http::response<http::string_body> handle_generate_cert(const http::request<http::string_body>& req, int64_t user_id);
+
     NodeInfo assign_virtual_ip(const std::string& node_id,
                                const std::string& network_id,
                                const std::string& public_key);
@@ -104,6 +116,9 @@ private:
     IpAllocator& ipam_;
     auth::JwtManager& jwt_;
     PeerManager& peer_mgr_;
+
+    // ── TLS ──
+    ssl::context ssl_ctx_{ssl::context::tlsv12_server};
 
     // ── New NAT modules ──
     SessionManager session_mgr_;

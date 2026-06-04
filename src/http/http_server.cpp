@@ -1,7 +1,12 @@
 #include "http/http_server.h"
 #include "ws/ws_session.h"
+#include "ws/wss_session.h"
+#include "crypto/CertGenerator.h"
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
+#include <boost/beast/ssl.hpp>
+#include <boost/asio/ssl.hpp>
+#include <fstream>
 #include <sstream>
 #include <thread>
 #include <algorithm>
@@ -120,6 +125,19 @@ const char* kAdminHtml = R"HTML(<!doctype html>
           </div>
         </div>
       </div>
+
+      <!-- TLS Certificate Section -->
+      <div class="panel" style="margin-top:16px;">
+        <h2>TLS Certificate</h2>
+        <div id="certInfo">
+          <div class="muted">Loading certificate info...</div>
+        </div>
+        <div style="margin-top:8px;display:flex;gap:8px;">
+          <button id="genCertBtn" class="primary">Generate Self-Signed Certificate</button>
+          <button id="refreshCertBtn">Refresh</button>
+        </div>
+        <div id="certResult" class="muted" style="margin-top:8px;"></div>
+      </div>
     </div>
   </div>
   <script>
@@ -145,7 +163,11 @@ const char* kAdminHtml = R"HTML(<!doctype html>
       detailBody: document.getElementById("detailBody"),
       detailKv: document.getElementById("detailKv"),
       detailNetworks: document.getElementById("detailNetworks"),
-      detailLan: document.getElementById("detailLan")
+      detailLan: document.getElementById("detailLan"),
+      certInfo: document.getElementById("certInfo"),
+      genCertBtn: document.getElementById("genCertBtn"),
+      refreshCertBtn: document.getElementById("refreshCertBtn"),
+      certResult: document.getElementById("certResult")
     };
     let authToken = localStorage.getItem(tokenKey) || "";
     let currentOverview = null;
@@ -285,9 +307,41 @@ const char* kAdminHtml = R"HTML(<!doctype html>
       setAuthed(false);
     }
 
+    // ── TLS Certificate ──
+    async function loadCertInfo() {
+      try {
+        const data = await api("/api/v1/admin/cert-info");
+        if (data.cert_pem) {
+          const lines = data.cert_pem.split("\n").slice(0, 3).join("\n");
+          els.certInfo.innerHTML = `<div class="muted">Certificate: ${data.cert_file}</div>
+            <pre style="font-size:11px;margin:4px 0;color:var(--muted);">${lines}...</pre>`;
+        } else {
+          els.certInfo.innerHTML = `<div class="muted">No certificate found at ${data.cert_file}</div>`;
+        }
+      } catch (err) {
+        els.certInfo.innerHTML = `<div class="muted">Failed to load cert info</div>`;
+      }
+    }
+
+    async function generateCert() {
+      els.genCertBtn.disabled = true;
+      els.certResult.textContent = "Generating certificate...";
+      try {
+        const data = await api("/api/v1/admin/generate-cert", { method: "POST" });
+        els.certResult.textContent = data.message;
+        await loadCertInfo();
+      } catch (err) {
+        els.certResult.textContent = "Certificate generation failed";
+      }
+      els.genCertBtn.disabled = false;
+    }
+
+    // ── Event listeners ──
     els.loginBtn.addEventListener("click", login);
     els.logoutBtn.addEventListener("click", logout);
     els.refreshBtn.addEventListener("click", loadOverview);
+    els.genCertBtn.addEventListener("click", generateCert);
+    els.refreshCertBtn.addEventListener("click", loadCertInfo);
     [els.username, els.password].forEach(el => el.addEventListener("keydown", ev => {
       if (ev.key === "Enter") login();
     }));
@@ -295,6 +349,7 @@ const char* kAdminHtml = R"HTML(<!doctype html>
     if (authToken) {
       setAuthed(true);
       loadOverview();
+      loadCertInfo();
     } else {
       setAuthed(false);
     }
@@ -357,6 +412,21 @@ HttpServer::HttpServer(net::io_context& ioc,
     , jwt_(jwt)
     , peer_mgr_(peer_mgr)
 {
+    if (config.tls.enabled) {
+        try {
+            ssl_ctx_.set_options(ssl::context::default_workarounds |
+                                ssl::context::no_sslv2 |
+                                ssl::context::no_sslv3 |
+                                ssl::context::single_dh_use);
+            ssl_ctx_.use_certificate_file(config.tls.cert_file, ssl::context::pem);
+            ssl_ctx_.use_private_key_file(config.tls.key_file, ssl::context::pem);
+            spdlog::info("TLS enabled: cert={}, key={}", config.tls.cert_file, config.tls.key_file);
+        } catch (const std::exception& e) {
+            spdlog::error("Failed to load TLS cert/key: {}", e.what());
+            throw;
+        }
+    }
+
     spdlog::info("HTTP server listening on {}:{}", config.server.host, config.server.port);
 
     // ── Initialize HeartbeatMonitor ──
@@ -771,6 +841,12 @@ void HttpServer::do_accept() {
 }
 
 void HttpServer::handle_connection(tcp::socket socket) {
+    // If TLS is enabled, route through the TLS handler
+    if (config_.tls.enabled) {
+        handle_tls_connection(std::move(socket));
+        return;
+    }
+
     beast::flat_buffer buf;
     http::request_parser<http::string_body> parser;
     parser.body_limit(std::numeric_limits<uint64_t>::max());
@@ -798,6 +874,227 @@ void HttpServer::handle_connection(tcp::socket socket) {
     http::write(socket, res, ec);
     if (ec) {
         spdlog::error("HTTP write error: {}", ec.message());
+    }
+}
+
+void HttpServer::handle_tls_connection(tcp::socket socket) {
+    try {
+        auto ssl_sock = std::make_shared<beast::ssl_stream<beast::tcp_stream>>(
+            std::move(socket), ssl_ctx_);
+
+        // SSL handshake
+        beast::error_code ec;
+        ssl_sock->handshake(ssl::stream_base::server, ec);
+        if (ec) {
+            spdlog::error("TLS handshake error: {}", ec.message());
+            return;
+        }
+
+        // Read HTTP request
+        beast::flat_buffer buf;
+        http::request_parser<http::string_body> parser;
+        parser.body_limit(std::numeric_limits<uint64_t>::max());
+        http::read(*ssl_sock, buf, parser, ec);
+        if (ec) {
+            spdlog::error("HTTPS read error: {}", ec.message());
+            return;
+        }
+
+        auto& req = parser.get();
+
+        // WebSocket upgrade over TLS
+        if (beast::websocket::is_upgrade(req)) {
+            handle_wss_upgrade(ssl_sock, std::move(req));
+            return;
+        }
+
+        // REST over HTTPS
+        auto res = handle_rest_request(req);
+        http::write(*ssl_sock, res, ec);
+        if (ec) {
+            spdlog::error("HTTPS write error: {}", ec.message());
+        }
+
+    } catch (const std::exception& e) {
+        spdlog::error("handle_tls_connection error: {}", e.what());
+    }
+}
+
+void HttpServer::handle_wss_upgrade(std::shared_ptr<beast::ssl_stream<beast::tcp_stream>> ssl_sock,
+                                    http::request<http::string_body> req) {
+    // Determine auth mode based on URL path
+    auto target = std::string(req.target());
+    bool use_node_auth = (target.find("/api/v1/ws/nat") != std::string::npos);
+
+    if (use_node_auth) {
+        auto session = std::make_shared<beast_ws::WssSession>(
+            std::move(ssl_sock), std::move(req),
+
+            // Node auth callback
+            [this](const std::string& node_id,
+                   const std::string& network_id,
+                   const std::string& public_key) -> beast_ws::AuthResult {
+                auto info = assign_virtual_ip(node_id, network_id, public_key);
+                ensure_node_auth_persisted(info);
+                node_registry_.registerNode(info);
+                node_registry_.updateSessionState(node_id, true, "online");
+                ensure_tun_gateway(info.network_id);
+
+                beast_ws::AuthResult result;
+                result.success = true;
+                result.node_id = node_id;
+                result.network_id = info.network_id;
+                result.public_key = public_key;
+                return result;
+            },
+
+            // Post-node-auth callback
+            [this](beast_ws::SessionPtr session) {
+                auto nid = session->node_id();
+                auto net_id = session->network_id();
+
+                session_mgr_.registerSession(nid, session);
+
+                auto peers = node_registry_.listNetworkNodes(net_id);
+                nlohmann::json peer_list = {
+                    {"type", "peer_list"},
+                    {"peers", nlohmann::json::array()}
+                };
+                for (const auto& p : peers) {
+                    if (p.node_id != nid) {
+                        peer_list["peers"].push_back(p.to_peer_json());
+                    }
+                }
+                session->send_json(peer_list.dump());
+
+                auto node = node_registry_.findNode(nid);
+                if (node.has_value() && !node->virtual_ip.empty()) {
+                    nlohmann::json vip_msg = {
+                        {"type", "virtual_ip_assigned"},
+                        {"virtual_ip", node->virtual_ip},
+                        {"gateway_ip", node->gateway_ip},
+                        {"subnet", node->subnet}
+                    };
+                    session->send_json(vip_msg.dump());
+                }
+
+                nlohmann::json broadcast_list = {
+                    {"type", "peer_list"},
+                    {"peers", nlohmann::json::array()}
+                };
+                for (const auto& p : peers) {
+                    broadcast_list["peers"].push_back(p.to_peer_json());
+                }
+                session_mgr_.broadcastIf(broadcast_list, [&](const std::string& id) {
+                    return id != nid && node_registry_.isOnline(id);
+                });
+
+                spdlog::info("WSS Node online: node_id={}, network_id={}, online={}",
+                             nid, net_id, session_mgr_.onlineCount());
+            },
+
+            // Message handler
+            [this](beast_ws::SessionPtr session, const std::string& node_id, const nlohmann::json& msg) {
+                auto type = msg["type"].get<std::string>();
+                if (type == "update_addr") {
+                    msg_dispatcher_.dispatch(session, node_id, msg);
+                } else if (type == "heartbeat") {
+                    msg_dispatcher_.dispatch(session, node_id, msg);
+                } else if (type == "transport_status") {
+                    msg_dispatcher_.dispatch(session, node_id, msg);
+                } else if (type == "connect_peer") {
+                    msg_dispatcher_.dispatch(session, node_id, msg);
+                } else if (type == "tun_packet") {
+                    handle_tun_packet(node_id, msg);
+                } else {
+                    spdlog::warn("Unknown WSS message type '{}' from node_id={}", type, node_id);
+                }
+            },
+
+            // Disconnect handler
+            [this](const std::string& node_id) {
+                if (shutting_down_) return;
+
+                if (session_mgr_.hasSession(node_id)) {
+                    spdlog::debug("Ignoring stale WSS disconnect for node_id={}", node_id);
+                    return;
+                }
+
+                spdlog::info("WSS disconnected: node_id={}", node_id);
+                node_registry_.updateSessionState(node_id, false, "grace", "ws_disconnected");
+                session_mgr_.removeSession(node_id);
+                device_svc_.set_offline(node_id);
+
+                auto node = node_registry_.findNode(node_id);
+                if (node.has_value()) {
+                    auto peers = node_registry_.listNetworkNodes(node->network_id);
+                    nlohmann::json peer_list = {{"type", "peer_list"}, {"peers", nlohmann::json::array()}};
+                    for (const auto& p : peers) {
+                        if (p.node_id != node_id) {
+                            peer_list["peers"].push_back(p.to_peer_json());
+                        }
+                    }
+                    session_mgr_.broadcastIf(peer_list, [&](const std::string& id) {
+                        return id != node_id && node_registry_.isOnline(id);
+                    });
+                }
+            },
+
+            config_.websocket.heartbeat_timeout_sec
+        );
+        session->start();
+
+    } else {
+        // Legacy JWT-based auth over WSS
+        auto session = std::make_shared<beast_ws::WssSession>(
+            std::move(ssl_sock), std::move(req),
+
+            [this](const std::string& token) -> std::optional<auth::JwtPayload> {
+                return jwt_.verify_token(token);
+            },
+
+            [this](beast_ws::SessionPtr session, int64_t user_id, const std::string& username) {
+                spdlog::info("WSS JWT auth: user_id={}, username={}", user_id, username);
+            },
+
+            [this](beast_ws::SessionPtr session, const std::string& node_id, const nlohmann::json& msg) {
+                auto type = msg["type"].get<std::string>();
+                if (type == "device_update") {
+                    auto& d = msg["device"];
+                    std::vector<std::string> lan_ips;
+                    if (d.contains("lan_ips")) {
+                        lan_ips = d["lan_ips"].get<std::vector<std::string>>();
+                    }
+                    device_svc_.update_connection_info(
+                        node_id,
+                        d.value("public_ip", std::string("")),
+                        d.value("public_port", 0),
+                        lan_ips
+                    );
+                    auto device = device_svc_.get_device(node_id);
+                    if (device.has_value()) {
+                        session->set_device_info(*device);
+                    }
+                    peer_mgr_.register_session(node_id, session);
+                } else if (type == "connect_peer") {
+                    auto target = msg["target_node_id"].get<std::string>();
+                    auto err = peer_mgr_.handle_connect_peer(node_id, target);
+                    if (!err.empty()) {
+                        nlohmann::json response = {{"type", "error"}, {"message", err}};
+                        session->send_json(response.dump());
+                    }
+                }
+            },
+
+            [this](const std::string& node_id) {
+                if (shutting_down_) return;
+                peer_mgr_.unregister_session(node_id);
+                device_svc_.set_offline(node_id);
+            },
+
+            config_.websocket.heartbeat_timeout_sec
+        );
+        session->start();
     }
 }
 
@@ -906,6 +1203,26 @@ http::response<http::string_body> HttpServer::handle_rest_request(
         }
         if (path.rfind("/api/v1/admin/devices/", 0) == 0 && method == "GET") {
             return handle_admin_device_detail(req, path.substr(std::string("/api/v1/admin/devices/").size()), user_id);
+        }
+
+        // Cert management
+        if (path == "/api/v1/admin/generate-cert" && method == "POST") {
+            return handle_generate_cert(req, user_id);
+        }
+        if (path == "/api/v1/admin/cert-info" && method == "GET") {
+            auto cert_pem = crypto::CertGenerator::loadCertPEM(config_.tls.cert_file);
+            if (cert_pem.has_value()) {
+                return make_json_response(http::status::ok, {
+                    {"cert_pem", *cert_pem},
+                    {"cert_file", config_.tls.cert_file},
+                    {"key_file", config_.tls.key_file}
+                });
+            }
+            return make_json_response(http::status::ok, {
+                {"cert_pem", nullptr},
+                {"cert_file", config_.tls.cert_file},
+                {"key_file", config_.tls.key_file}
+            });
         }
 
     } catch (const std::exception& e) {
@@ -1332,6 +1649,42 @@ http::response<http::string_body> HttpServer::handle_admin_device_detail(
         {"device", device_json},
         {"networks", membership},
         {"runtime", runtime}
+    });
+}
+
+// ── Cert Management ────────────────────────────────────────
+
+http::response<http::string_body> HttpServer::handle_generate_cert(
+    const http::request<http::string_body>& req, int64_t user_id)
+{
+    auto result = crypto::CertGenerator::generate(
+        config_.tls.cert_file,
+        config_.tls.key_file
+    );
+
+    if (!result.error.empty()) {
+        return make_error_response(http::status::internal_server_error, result.error);
+    }
+
+    spdlog::info("TLS certificate generated: cert={}, key={}",
+                 config_.tls.cert_file, config_.tls.key_file);
+
+    // Reload TLS cert if the server is running with TLS enabled
+    if (config_.tls.enabled) {
+        try {
+            ssl_ctx_.use_certificate_file(config_.tls.cert_file, ssl::context::pem);
+            ssl_ctx_.use_private_key_file(config_.tls.key_file, ssl::context::pem);
+            spdlog::info("TLS certificate reloaded");
+        } catch (const std::exception& e) {
+            spdlog::error("Failed to reload TLS certificate: {}", e.what());
+        }
+    }
+
+    return make_json_response(http::status::ok, {
+        {"message", "Certificate generated successfully"},
+        {"cert_file", config_.tls.cert_file},
+        {"key_file", config_.tls.key_file},
+        {"cert_pem", result.cert_pem}
     });
 }
 

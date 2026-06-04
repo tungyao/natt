@@ -9,10 +9,10 @@
 
 // Forward declaration
 namespace beast_ws {
-class WsSession;
+class ISession;
 }
 
-using WsSessionPtr = std::shared_ptr<beast_ws::WsSession>;
+using WsSessionPtr = std::shared_ptr<beast_ws::ISession>;
 
 class PeerManager {
 public:

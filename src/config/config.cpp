@@ -42,6 +42,12 @@ Config Config::load(const std::string& path) {
         if (a["password"]) cfg.admin.password = a["password"].as<std::string>();
     }
 
+    if (auto t = root["tls"]) {
+        if (t["enabled"]) cfg.tls.enabled = t["enabled"].as<bool>();
+        if (t["cert_file"]) cfg.tls.cert_file = t["cert_file"].as<std::string>();
+        if (t["key_file"]) cfg.tls.key_file = t["key_file"].as<std::string>();
+    }
+
     if (auto ipam = root["ipam"]) {
         if (auto pools = ipam["pools"]) {
             cfg.ipam.pools.clear();

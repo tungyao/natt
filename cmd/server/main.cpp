@@ -7,6 +7,7 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 
 #include "config/config.h"
+#include "crypto/CertGenerator.h"
 #include "repository/database.h"
 #include "repository/user_repo.h"
 #include "repository/device_repo.h"
@@ -32,10 +33,50 @@ void signal_handler(int sig) {
 }
 
 int main(int argc, char* argv[]) {
-    // ── Parse config path ──
+    // ── Parse CLI flags ──
     std::string config_path = "config.yaml";
-    if (argc > 1) {
-        config_path = argv[1];
+    std::string cert_path, key_path;
+    bool generate_cert = false;
+
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--generate-cert") {
+            generate_cert = true;
+        } else if (arg == "--cert-file" && i + 1 < argc) {
+            cert_path = argv[++i];
+        } else if (arg == "--key-file" && i + 1 < argc) {
+            key_path = argv[++i];
+        } else if (arg == "--help") {
+            std::cout << "Usage: natmesh-server [config.yaml] [options]\n"
+                      << "Options:\n"
+                      << "  --generate-cert         Generate a self-signed TLS certificate and exit\n"
+                      << "  --cert-file <path>      Certificate output path (default: server.crt)\n"
+                      << "  --key-file <path>       Private key output path (default: server.key)\n"
+                      << "  --help                  Show this help\n";
+            return 0;
+        } else if (arg[0] != '-') {
+            config_path = arg;
+        } else {
+            std::cerr << "Unknown option: " << arg << "\n";
+            return 1;
+        }
+    }
+
+    // ── Generate certificate mode ──
+    if (generate_cert) {
+        auto cfg = Config::load(config_path);
+        if (cert_path.empty()) cert_path = cfg.tls.cert_file;
+        if (key_path.empty()) key_path = cfg.tls.key_file;
+
+        auto result = crypto::CertGenerator::generate(cert_path, key_path);
+        if (!result.error.empty()) {
+            std::cerr << "Failed to generate certificate: " << result.error << "\n";
+            return 1;
+        }
+        std::cout << "Self-signed certificate generated:\n"
+                  << "  Cert: " << cert_path << "\n"
+                  << "  Key:  " << key_path << "\n";
+        return 0;
     }
 
     // ── Load config ──

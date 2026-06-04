@@ -3,6 +3,8 @@
 #include <boost/asio.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/websocket.hpp>
+#include <boost/beast/ssl.hpp>
+#include <boost/asio/ssl.hpp>
 #include <nlohmann/json.hpp>
 #include <memory>
 #include <string>
@@ -15,7 +17,9 @@
 namespace beast = boost::beast;
 namespace websocket = beast::websocket;
 namespace net = boost::asio;
+namespace ssl = net::ssl;
 using tcp = net::ip::tcp;
+using ssl_stream = beast::ssl_stream<beast::tcp_stream>;
 
 class WsClient : public std::enable_shared_from_this<WsClient> {
 public:
@@ -26,6 +30,13 @@ public:
 
     // Connect to WebSocket server (synchronous, blocking)
     bool connect(const std::string& host, const std::string& port, const std::string& path = "/api/v1/ws/nat");
+
+    // Connect to WebSocket server over TLS (WSS).
+    // If cert_pem is non-empty, it is used as the trusted CA cert to verify the server.
+    // If cert_pem is empty, server certificate verification is skipped.
+    bool connectSecure(const std::string& host, const std::string& port,
+                       const std::string& path = "/api/v1/ws/nat",
+                       const std::string& cert_pem = "");
 
     // Send a JSON message (synchronous, blocking)
     bool send(const nlohmann::json& msg);
@@ -56,6 +67,8 @@ private:
     // Must outlive ws_, because Beast stream destruction touches io_context services.
     net::io_context ioc_;
     std::unique_ptr<websocket::stream<beast::tcp_stream>> ws_;
+    std::unique_ptr<websocket::stream<ssl_stream>> wss_;
+    bool use_ssl_ = false;
     std::atomic<bool> connected_{false};
     std::atomic<bool> reader_running_{false};
 

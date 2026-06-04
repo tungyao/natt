@@ -22,7 +22,23 @@ namespace beast_ws {
 
 // Forward declarations
 class WsSession;
-using WsSessionPtr = std::shared_ptr<WsSession>;
+
+// Abstract session interface — allows both WsSession and Wssession
+// to be used interchangeably via shared_ptr<ISession>.
+class ISession {
+public:
+    virtual ~ISession() = default;
+    virtual void send_json(const std::string& json_str) = 0;
+    virtual void close(const std::string& reason = "server_close") = 0;
+    virtual void set_device_info(const Device& device) = 0;
+    virtual std::optional<Device> get_device_info() const = 0;
+    virtual const std::string& node_id() const = 0;
+    virtual const std::string& network_id() const = 0;
+    virtual bool is_authenticated() const = 0;
+};
+
+using SessionPtr = std::shared_ptr<ISession>;
+using WsSessionPtr = SessionPtr;
 
 // Auth result — either JWT-based or node_id-based
 struct AuthResult {
@@ -37,16 +53,18 @@ struct AuthResult {
     std::string public_key;
 };
 
-class WsSession : public std::enable_shared_from_this<WsSession> {
+// Shared callback types for both WsSession and WssSession
+using AuthCallback = std::function<std::optional<auth::JwtPayload>(const std::string& token)>;
+using NodeAuthCallback = std::function<AuthResult(const std::string& node_id,
+                                                    const std::string& network_id,
+                                                    const std::string& public_key)>;
+using PostAuthCallback = std::function<void(SessionPtr, int64_t user_id, const std::string& username)>;
+using PostNodeAuthCallback = std::function<void(SessionPtr)>;
+using MessageHandler = std::function<void(SessionPtr, const std::string& node_id, const nlohmann::json& msg)>;
+using DisconnectHandler = std::function<void(const std::string& node_id)>;
+
+class WsSession : public ISession, public std::enable_shared_from_this<WsSession> {
 public:
-    // Callback types
-    using AuthCallback = std::function<std::optional<auth::JwtPayload>(const std::string& token)>;
-    using NodeAuthCallback = std::function<AuthResult(const std::string& node_id,
-                                                       const std::string& network_id,
-                                                       const std::string& public_key)>;
-    using PostAuthCallback = std::function<void(WsSessionPtr, int64_t user_id, const std::string& username)>;
-    using MessageHandler = std::function<void(WsSessionPtr, const std::string& node_id, const nlohmann::json& msg)>;
-    using DisconnectHandler = std::function<void(const std::string& node_id)>;
 
     // Constructor with JWT auth (legacy)
     // Takes the parsed HTTP request so the WebSocket stream can complete the handshake.
@@ -57,9 +75,6 @@ public:
               MessageHandler msg_handler,
               DisconnectHandler disconnect_handler,
               int heartbeat_timeout_sec);
-
-    // Post-node-auth callback (called after successful node auth, owns the session)
-    using PostNodeAuthCallback = std::function<void(WsSessionPtr)>;
 
     // Constructor with node_id-based auth (new protocol)
     WsSession(tcp::socket&& socket,
@@ -73,15 +88,15 @@ public:
     ~WsSession();
 
     void start();
-    void send_json(const std::string& json_str);
-    void close(const std::string& reason = "server_close");
+    void send_json(const std::string& json_str) override;
+    void close(const std::string& reason = "server_close") override;
 
     // Set/get device info after auth
-    void set_device_info(const Device& device);
-    std::optional<Device> get_device_info() const;
-    const std::string& node_id() const { return node_id_; }
-    const std::string& network_id() const { return network_id_; }
-    bool is_authenticated() const { return authenticated_; }
+    void set_device_info(const Device& device) override;
+    std::optional<Device> get_device_info() const override;
+    const std::string& node_id() const override { return node_id_; }
+    const std::string& network_id() const override { return network_id_; }
+    bool is_authenticated() const override { return authenticated_; }
 
     // Store the HTTP request for async_accept
     http::request<http::string_body> http_request_;
