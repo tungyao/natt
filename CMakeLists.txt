@@ -111,18 +111,30 @@ add_executable(stun_server
 )
 setup_target(stun_server)
 
-# ── test_client ──────────────────────────────────────────────
-add_executable(test_client
-    cmd/test_client/main.cpp
-    src/crypto/NoiseProtocol.cpp
+# ── natcore (static library) ──────────────────────────────────
+add_library(natcore STATIC
+    src/core/CoreClient.cpp
+    src/client/TestClient.cpp
     src/client/WsClient.cpp
     src/client/UdpPuncher.cpp
-    src/client/TestClient.cpp
     src/stun/StunServer.cpp
+    src/crypto/NoiseProtocol.cpp
     ${PLATFORM_TUN_SRC}
 )
-setup_target(test_client)
-target_link_libraries(test_client PRIVATE yaml-cpp)
+target_include_directories(natcore PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_link_libraries(natcore PUBLIC ${COMMON_LIBS} PRIVATE yaml-cpp)
+
+# ── natt-cli ──────────────────────────────────────────────────
+add_executable(natt-cli cmd/client/main.cpp)
+target_link_libraries(natt-cli PRIVATE natcore yaml-cpp)
+target_compile_options(natt-cli PRIVATE -Wall -Wextra -Wpedantic -Wno-unused-parameter)
+
+# ── natt-gui ────────────────────────────────────────────────────
+add_executable(natt-gui cmd/gui/main.cpp cmd/gui/index.html)
+target_link_libraries(natt-gui PRIVATE natcore webview::core_static)
 
 # ── relay_server ─────────────────────────────────────────────
 add_executable(relay_server

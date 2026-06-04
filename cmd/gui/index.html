@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NATT Client</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: #1a1b2e; --surface: #242540; --border: #2d2f54;
+  --text: #e0e0f0; --text-dim: #8888aa;
+  --green: #4ade80; --yellow: #fbbf24; --red: #f87171; --blue: #60a5fa;
+  --accent: #7c5cfc;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  color: var(--text);
+}
+body { background: var(--bg); display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+
+.header {
+  padding: 12px 16px; background: var(--surface); border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 12px;
+}
+.header h1 { font-size: 15px; font-weight: 600; letter-spacing: 0.3px; }
+.status-dot {
+  width: 10px; height: 10px; border-radius: 50%; display: inline-block;
+  background: var(--text-dim); transition: background 0.3s;
+}
+.status-dot.connected { background: var(--green); box-shadow: 0 0 8px var(--green); }
+.status-dot.connecting { background: var(--yellow); box-shadow: 0 0 8px var(--yellow); }
+.status-dot.error { background: var(--red); box-shadow: 0 0 8px var(--red); }
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: auto 1fr;
+  gap: 1px;
+  flex: 1; background: var(--border);
+}
+.panel {
+  background: var(--surface); padding: 14px; overflow: auto;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.panel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); margin-bottom: 4px; }
+
+/* Config form */
+.form-row { display: flex; gap: 6px; align-items: center; }
+.form-row label { min-width: 90px; font-size: 12px; color: var(--text-dim); }
+.form-row input, .form-row select {
+  flex: 1; padding: 5px 8px; border: 1px solid var(--border); border-radius: 4px;
+  background: var(--bg); color: var(--text); font-size: 12px; outline: none;
+}
+.form-row input:focus { border-color: var(--accent); }
+.checkbox-row { display: flex; align-items: center; gap: 8px; }
+.checkbox-row input { width: 16px; height: 16px; accent-color: var(--accent); }
+
+.btn {
+  padding: 6px 16px; border: none; border-radius: 4px; cursor: pointer;
+  font-size: 12px; font-weight: 500; transition: all 0.15s;
+}
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { filter: brightness(1.15); }
+.btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-danger { background: var(--red); color: #fff; }
+.btn-danger:hover { filter: brightness(1.15); }
+.btn-danger:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.button-row { display: flex; gap: 8px; margin-top: 4px; }
+
+/* Status panel */
+.status-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 4px 16px;
+}
+.stat-item {}
+.stat-label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+.stat-value { font-size: 14px; font-weight: 500; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+.peer-list { margin-top: 4px; }
+.peer-item { padding: 3px 6px; background: var(--bg); border-radius: 3px; margin-bottom: 2px; font-size: 12px; font-family: monospace; }
+.no-peers { color: var(--text-dim); font-size: 12px; font-style: italic; }
+
+/* TUN panel */
+.tun-info { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; }
+.tun-label { font-size: 11px; color: var(--text-dim); }
+.tun-value { font-size: 13px; font-family: monospace; }
+.tun-hidden { display: none; }
+
+/* Log panel */
+.log-container {
+  flex: 1; overflow-y: auto; background: var(--bg); border-radius: 4px;
+  padding: 8px; font-family: 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 11px; line-height: 1.5; min-height: 100px;
+}
+.log-entry { white-space: pre-wrap; word-break: break-all; }
+.log-info { color: var(--text); }
+.log-warn { color: var(--yellow); }
+.log-err { color: var(--red); }
+.log-crit { color: var(--red); font-weight: bold; }
+
+/* Full width panels */
+.panel-full { grid-column: 1 / -1; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <span class="status-dot" id="statusDot"></span>
+  <h1>NATT Client</h1>
+  <span style="font-size:12px;color:var(--text-dim)" id="statusLabel">Stopped</span>
+</div>
+
+<div class="grid">
+  <!-- Config Panel -->
+  <div class="panel">
+    <h2>Configuration</h2>
+    <div class="form-row">
+      <label>Node ID</label>
+      <input id="nodeId" value="test-node" placeholder="test-node">
+    </div>
+    <div class="form-row">
+      <label>Network ID</label>
+      <input id="networkId" value="home" placeholder="home">
+    </div>
+    <div class="form-row">
+      <label>Control URL</label>
+      <input id="controlUrl" value="127.0.0.1:8080" placeholder="127.0.0.1:8080">
+    </div>
+    <div class="form-row">
+      <label>STUN</label>
+      <input id="stunAddr" value="127.0.0.1:3478" placeholder="127.0.0.1:3478">
+    </div>
+    <div class="form-row">
+      <label>UDP Port</label>
+      <input id="udpPort" value="0" placeholder="0 = auto">
+    </div>
+    <div class="form-row">
+      <label>Connect</label>
+      <input id="connectNode" value="" placeholder="Peer node ID">
+    </div>
+    <div class="form-row">
+      <label>Relay</label>
+      <input id="relayAddr" value="" placeholder="127.0.0.1:7000">
+    </div>
+    <div class="form-row">
+      <label>Noise Key</label>
+      <input id="noiseKey" value="" placeholder="Base64 private key">
+    </div>
+    <div class="form-row">
+      <label>Cert File</label>
+      <input id="certFile" value="" placeholder="CA cert PEM path">
+    </div>
+    <div class="checkbox-row">
+      <input id="useWss" type="checkbox">
+      <label for="useWss">Use WSS (TLS)</label>
+    </div>
+    <div class="checkbox-row">
+      <input id="enableTun" type="checkbox">
+      <label for="enableTun">Enable TUN interface</label>
+    </div>
+    <div class="button-row">
+      <button class="btn btn-primary" id="startBtn" onclick="doStart()">Start</button>
+      <button class="btn btn-danger" id="stopBtn" onclick="doStop()" disabled>Stop</button>
+    </div>
+  </div>
+
+  <!-- Status Panel -->
+  <div class="panel">
+    <h2>Status</h2>
+    <div class="status-grid">
+      <div class="stat-item">
+        <div class="stat-label">Mode</div>
+        <div class="stat-value" id="sMode">—</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-label">RTT</div>
+        <div class="stat-value" id="sRtt">—</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-label">P2P Status</div>
+        <div class="stat-value" id="sP2p">—</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-label">Uptime</div>
+        <div class="stat-value" id="sUptime">—</div>
+      </div>
+    </div>
+    <div>
+      <div class="stat-label">Online Peers</div>
+      <div class="peer-list" id="peerList">
+        <div class="no-peers">No peers connected</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TUN Panel -->
+  <div class="panel">
+    <h2>TUN Interface</h2>
+    <div class="tun-info" id="tunInfo">
+      <div class="tun-label">Virtual IP</div>
+      <div class="tun-value tun-hidden" id="tunVip">—</div>
+      <div class="tun-label">Gateway</div>
+      <div class="tun-value tun-hidden" id="tunGw">—</div>
+      <div class="tun-label">Subnet</div>
+      <div class="tun-value tun-hidden" id="tunSubnet">—</div>
+    </div>
+    <div id="noTun" style="color:var(--text-dim);font-size:12px;font-style:italic;">No TUN interface active</div>
+  </div>
+
+  <!-- Log Panel -->
+  <div class="panel panel-full">
+    <h2>Log</h2>
+    <div class="log-container" id="logContainer"></div>
+  </div>
+</div>
+
+<script>
+// ── State ────────────────────────────────────────
+const state = {
+  running: false,
+  mode: 'stopped',
+  punchSuccess: false,
+  peers: [],
+  startTime: 0
+};
+
+function updateUI() {
+  const dot = document.getElementById('statusDot');
+  const label = document.getElementById('statusLabel');
+  const startBtn = document.getElementById('startBtn');
+  const stopBtn = document.getElementById('stopBtn');
+  const sMode = document.getElementById('sMode');
+  const sP2p = document.getElementById('sP2p');
+
+  if (state.running) {
+    if (state.mode === 'p2p') {
+      dot.className = 'status-dot connected';
+      label.textContent = 'Connected (P2P)';
+    } else if (state.mode === 'relay') {
+      dot.className = 'status-dot connected';
+      label.textContent = 'Connected (Relay)';
+    } else if (state.mode === 'failed') {
+      dot.className = 'status-dot error';
+      label.textContent = 'Failed';
+    } else {
+      dot.className = 'status-dot connecting';
+      label.textContent = 'Connecting...';
+    }
+  } else {
+    dot.className = 'status-dot';
+    label.textContent = 'Stopped';
+  }
+
+  startBtn.disabled = state.running;
+  stopBtn.disabled = !state.running;
+  sMode.textContent = state.mode === 'stopped' ? '—' : state.mode;
+  sP2p.textContent = state.punchSuccess ? '✓ Connected' : state.running ? 'Connecting...' : '—';
+}
+
+// ── C++ → JS (called via w.eval) ─────────────────
+
+function addLog(line) {
+  const container = document.getElementById('logContainer');
+  const div = document.createElement('div');
+  div.className = 'log-entry';
+  if (line.includes('[error]') || line.includes('[critical]')) {
+    div.className += ' log-err';
+  } else if (line.includes('[warn]')) {
+    div.className += ' log-warn';
+  } else {
+    div.className += ' log-info';
+  }
+  div.textContent = line;
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+}
+
+function setState(s) {
+  state.mode = s;
+  if (s === 'p2p' || s === 'relay') {
+    state.punchSuccess = true;
+  }
+  updateUI();
+}
+
+function setPunchSuccess() {
+  state.punchSuccess = true;
+  document.getElementById('sP2p').textContent = '✓ Connected';
+}
+
+function setError(msg) {
+  state.mode = 'failed';
+  addLog('[error] ' + msg);
+  updateUI();
+}
+
+function addPeer(nodeId, ip, port) {
+  const list = document.getElementById('peerList');
+  const existing = list.querySelector('.no-peers');
+  if (existing) existing.remove();
+
+  const div = document.createElement('div');
+  div.className = 'peer-item';
+  div.textContent = nodeId + (ip ? ' @ ' + ip + ':' + port : '');
+  list.appendChild(div);
+  state.peers.push(nodeId);
+}
+
+function setTunInfo(vip, gw, subnet) {
+  document.getElementById('noTun').style.display = 'none';
+  document.getElementById('tunVip').textContent = vip;
+  document.getElementById('tunVip').className = 'tun-value';
+  document.getElementById('tunGw').textContent = gw || '—';
+  document.getElementById('tunGw').className = 'tun-value';
+  document.getElementById('tunSubnet').textContent = subnet || '—';
+  document.getElementById('tunSubnet').className = 'tun-value';
+}
+
+// ── JS → C++ (calls w.bind functions) ────────────
+
+function getConfig() {
+  return JSON.stringify({
+    node_id: document.getElementById('nodeId').value,
+    network_id: document.getElementById('networkId').value,
+    control_url: document.getElementById('controlUrl').value,
+    stun_addr: document.getElementById('stunAddr').value,
+    udp_port: parseInt(document.getElementById('udpPort').value) || 0,
+    connect_node_id: document.getElementById('connectNode').value,
+    relay_addr: document.getElementById('relayAddr').value,
+    noise_private_key: document.getElementById('noiseKey').value,
+    use_ssl: document.getElementById('useWss').checked,
+    cert_file: document.getElementById('certFile').value,
+    enable_tun: document.getElementById('enableTun').checked,
+    tun_name: 'nat%d',
+    tun_mtu: 1300
+  });
+}
+
+function doStart() {
+  state.startTime = Date.now();
+  state.running = true;
+  state.mode = 'connecting';
+  updateUI();
+  addLog('[info] Starting NATT client...');
+
+  if (typeof startClient !== 'undefined') {
+    startClient(getConfig());
+  }
+}
+
+function doStop() {
+  addLog('[info] Stopping NATT client...');
+  if (typeof stopClient !== 'undefined') {
+    stopClient();
+  }
+  state.running = false;
+  state.mode = 'stopped';
+  updateUI();
+}
+
+// Periodic status polling
+setInterval(async () => {
+  if (typeof getStatus !== 'undefined') {
+    try {
+      const resp = getStatus();
+      const data = typeof resp === 'string' ? JSON.parse(resp) : resp;
+      state.running = data.running;
+      if (data.mode !== state.mode && !state.running) {
+        state.mode = 'stopped';
+      }
+    } catch(e) {}
+  }
+
+  if (state.running && state.startTime > 0) {
+    const elapsed = Math.floor((Date.now() - state.startTime) / 1000);
+    const m = Math.floor(elapsed / 60);
+    const s = elapsed % 60;
+    document.getElementById('sUptime').textContent = m + 'm ' + s + 's';
+  }
+}, 1000);
+
+updateUI();
+</script>
+</body>
+</html>

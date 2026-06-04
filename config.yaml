@@ -27,6 +27,11 @@ logging:
   level: "info"  # trace, debug, info, warn, error, critical
   pattern: "[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] [%s:%#] %v"
 
+tls:
+  enabled: true
+  cert_file: "server.crt"
+  key_file: "server.key"
+
 admin:
   enabled: true
   username: "admin"

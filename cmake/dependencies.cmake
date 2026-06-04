@@ -247,6 +247,16 @@ else()
     message(STATUS "spdlog: ${spdlog_SOURCE_DIR}")
 endif()
 
+# ── webview (GUI) ──────────────────────────────────────────────
+FetchContent_Declare(
+    webview
+    GIT_REPOSITORY https://gh-proxy.org/https://github.com/webview/webview.git
+    GIT_TAG 0.12.0
+    GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(webview)
+message(STATUS "webview: ${webview_SOURCE_DIR}")
+
 # ── MSYS2 / MinGW cmake config path hint ─────────────────────
 # MSYS2 installs packages under /ucrt64/, /mingw64/, etc. — add
 # those to CMAKE_PREFIX_PATH so find_package can discover them.

@@ -9,16 +9,16 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <yaml-cpp/yaml.h>
 
-#include "client/TestClient.h"
+#include "natcore/CoreClient.h"
 
-static std::shared_ptr<TestClient> g_client;
+static std::shared_ptr<CoreClient> g_client;
 static volatile std::sig_atomic_t g_stop_requested = 0;
 
 void signal_handler(int) {
     g_stop_requested = 1;
 }
 
-static void apply_yaml_config(TestClient::Options& opts, const std::string& path) {
+static void apply_yaml_config(CoreConfig& opts, const std::string& path) {
     YAML::Node config = YAML::LoadFile(path);
 
     if (config["node_id"])              opts.node_id = config["node_id"].as<std::string>();
@@ -42,7 +42,7 @@ static void apply_yaml_config(TestClient::Options& opts, const std::string& path
 }
 
 int main(int argc, char* argv[]) {
-    TestClient::Options opts;
+    CoreConfig opts;
     opts.node_id = "test-node";
     opts.network_id = "home";
     opts.control_url = "127.0.0.1:8080";
@@ -63,7 +63,7 @@ int main(int argc, char* argv[]) {
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--config" || arg == "-c") {
-            ++i; // skip value, already consumed
+            ++i;
         } else if (arg == "--node-id" && i + 1 < argc) {
             opts.node_id = argv[++i];
         } else if (arg == "--network-id" && i + 1 < argc) {
@@ -93,16 +93,16 @@ int main(int argc, char* argv[]) {
         } else if (arg == "--tun-mtu" && i + 1 < argc) {
             opts.tun_mtu = std::stoi(argv[++i]);
         } else if (arg == "--help") {
-            std::cout << R"(NAT traversal test client
+            std::cout << R"(NAT traversal client
 
-Usage: test_client [options]
+Usage: natt-cli [options]
 
 Options:
   -c, --config <file>         Path to YAML config file
   --node-id <id>              Node identifier (default: test-node)
   --network-id <id>           Network identifier (default: home)
   --control <addr>            Control server address (default: 127.0.0.1:8080)
-                             (use wss:// prefix for TLS, e.g. wss://host:443/ws)
+                              (use wss:// prefix for TLS, e.g. wss://host:443/ws)
   --stun <addr>               STUN server address (default: 127.0.0.1:3478)
   --udp-port <port>           UDP listen port (0 = auto-assign, default: 0)
   --connect <node-id>         Peer node ID to connect to
@@ -146,7 +146,7 @@ CLI flags override values from the config file.
     spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] %v");
     spdlog::set_level(spdlog::level::info);
 
-    spdlog::info("NAT Test Client starting...");
+    spdlog::info("NATT CLI starting...");
 
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
@@ -162,65 +162,41 @@ CLI flags override values from the config file.
         spdlog::info("Auto-assigned UDP port: {}", opts.udp_port);
     }
 
-    std::atomic<bool> monitor_done{false};
-    std::thread signal_monitor;
-    auto join_signal_monitor = [&]() {
-        monitor_done = true;
-        if (signal_monitor.joinable()) {
-            signal_monitor.join();
-        }
+    CoreCallbacks cbs;
+    cbs.on_state_change = [](const std::string& state) {
+        spdlog::info("State: {}", state);
+    };
+    cbs.on_punch_success = []() {
+        spdlog::info("✓ P2P Hole Punch completed successfully!");
+    };
+    cbs.on_peer_online = [](const std::string& node_id, const std::string& ip, uint16_t port) {
+        spdlog::info("Peer online: node_id={} {}:{}", node_id, ip, port);
+    };
+    cbs.on_error = [](const std::string& msg) {
+        spdlog::warn("✗ {}", msg);
+    };
+    cbs.on_virtual_ip_assigned = [](const std::string& vip, const std::string& gw, const std::string& subnet) {
+        spdlog::info("Virtual IP: {} / {} (gateway: {})", vip, subnet, gw);
     };
 
-    try {
-        g_client = std::make_shared<TestClient>();
+    g_client = std::make_shared<CoreClient>(std::move(cbs));
 
-        signal_monitor = std::thread([&monitor_done]() {
-            bool logged = false;
-            while (!monitor_done.load()) {
-                if (g_stop_requested) {
-                    if (!logged) {
-                        spdlog::info("Shutting down...");
-                        logged = true;
-                    }
-                    if (g_client) {
-                        g_client->stop();
-                    }
-                    break;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            }
-        });
-
-        auto result = g_client->run(opts);
-        join_signal_monitor();
-
-        if (g_stop_requested) {
-            g_client->stop();
-            g_client.reset();
-            return 130;
-        }
-
-        if (result) {
-            if (g_client->punchSuccess()) {
-                spdlog::info("✓ P2P Hole Punch completed successfully!");
-            } else {
-                spdlog::info("✓ Relay fallback completed successfully!");
-            }
-            g_client.reset();
-            return 0;
-        } else {
-            spdlog::warn("✗ NAT traversal did not succeed");
-            g_client.reset();
-            return 1;
-        }
-
-    } catch (const std::exception& e) {
-        join_signal_monitor();
-        if (g_client) {
-            g_client->stop();
-            g_client.reset();
-        }
-        spdlog::critical("Fatal: {}", e.what());
+    if (!g_client->start(opts)) {
+        spdlog::critical("Failed to start CoreClient");
         return 1;
     }
+
+    // Wait for stop signal or client completion
+    while (!g_stop_requested && g_client->isRunning()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    g_client->stop();
+
+    if (g_stop_requested) {
+        spdlog::info("Shutdown by signal");
+        return 130;
+    }
+
+    return g_client->punchSuccess() ? 0 : 1;
 }

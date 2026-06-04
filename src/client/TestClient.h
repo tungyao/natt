@@ -60,6 +60,13 @@ public:
     // Check result
     bool punchSuccess() const { return punch_success_; }
 
+    // State accessors (for CoreClient integration)
+    ClientMode mode() const { return mode_; }
+    std::string peerNodeId() const { return peer_node_id_; }
+    std::string virtualIp() const { return virtual_ip_; }
+    std::string gatewayIp() const { return gateway_ip_; }
+    std::string subnet() const { return subnet_; }
+
 private:
     // STUN query (synchronous UDP)
     StunResult queryStun(const std::string& stun_host, uint16_t stun_port, uint16_t bind_port);
