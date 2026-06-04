@@ -342,7 +342,15 @@ function doStart() {
   addLog('[info] Starting NATT client...');
 
   if (typeof startClient !== 'undefined') {
-    startClient(getConfig());
+    var result = startClient(getConfig());
+    if (result) {
+      try {
+        var data = JSON.parse(result);
+        if (!data.ok) {
+          setError('Start failed: ' + (data.error || 'unknown error'));
+        }
+      } catch(e) {}
+    }
   }
 }
 
@@ -363,8 +371,9 @@ setInterval(async () => {
       const resp = getStatus();
       const data = typeof resp === 'string' ? JSON.parse(resp) : resp;
       state.running = data.running;
-      if (data.mode !== state.mode && !state.running) {
+      if (!state.running && state.mode !== 'stopped') {
         state.mode = 'stopped';
+        updateUI();
       }
     } catch(e) {}
   }

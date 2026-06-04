@@ -10,6 +10,12 @@ if(WIN32)
     set(PLATFORM_TUN_SRC src/tun/TunWindows.cpp)
     set(PLATFORM_LIBS ws2_32 iphlpapi mswsock)
     add_compile_definitions(_WIN32_WINNT=0x0601)  # Windows 7+ for netioapi/ws2tcpip
+    if(NOT MSVC)
+        # MinGW: full static link to embed all runtime (libgcc, libstdc++,
+        # winpthread, libmingwex) into the exe, avoiding dependency on
+        # MSYS2 DLLs and old UCRT functions like nanosleep64/clock_gettime64.
+        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static")
+    endif()
 else()
     set(PLATFORM_TUN_SRC src/tun/TunLinux.cpp)
     set(PLATFORM_LIBS)
@@ -133,7 +139,25 @@ target_link_libraries(natt-cli PRIVATE natcore yaml-cpp)
 target_compile_options(natt-cli PRIVATE -Wall -Wextra -Wpedantic -Wno-unused-parameter)
 
 # ── natt-gui ────────────────────────────────────────────────────
-add_executable(natt-gui cmd/gui/main.cpp cmd/gui/index.html)
+
+# Embed index.html as a hex array directly into the exe binary.
+# Uses a header file with inline function so no extra .cpp compilation needed.
+set(_gui_gen_dir "${CMAKE_CURRENT_BINARY_DIR}/generated")
+set(_gui_hdr "${_gui_gen_dir}/embedded_html.h")
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/cmd/gui/index.html" _gui_hex HEX)
+string(REGEX REPLACE "(..)" "0x\\1," _gui_arr "${_gui_hex}")
+file(WRITE "${_gui_hdr}"
+    "#pragma once\n"
+    "#include <string>\n"
+    "inline const std::string& embedded_html() {\n"
+    "    static const unsigned char d[] = { ${_gui_arr} };\n"
+    "    static const std::string s(reinterpret_cast<const char*>(d), sizeof(d));\n"
+    "    return s;\n"
+    "}\n"
+)
+
+add_executable(natt-gui cmd/gui/main.cpp)
+target_include_directories(natt-gui PRIVATE "${_gui_gen_dir}")
 target_link_libraries(natt-gui PRIVATE natcore webview::core_static)
 
 # ── relay_server ─────────────────────────────────────────────

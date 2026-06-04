@@ -7,7 +7,9 @@
 class CoreLogSink final : public spdlog::sinks::base_sink<std::mutex> {
 public:
     explicit CoreLogSink(std::function<void(const std::string&)> cb)
-        : cb_(std::move(cb)) {}
+        : cb_(std::move(cb)) {
+        this->set_pattern("%+");
+    }
 protected:
     void sink_it_(const spdlog::details::log_msg& msg) override {
         if (!cb_) return;

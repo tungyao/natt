@@ -1,19 +1,14 @@
 #include <webview.h>
 #include "natcore/CoreClient.h"
 
-#include <fstream>
-#include <filesystem>
-#include <sstream>
 #include <memory>
 #include <thread>
 #include <chrono>
 
-static std::string readFile(const std::string& path) {
-    std::ifstream ifs(path);
-    if (!ifs.is_open()) return "";
-    return std::string((std::istreambuf_iterator<char>(ifs)),
-                       std::istreambuf_iterator<char>());
-}
+#include <spdlog/spdlog.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
+
+#include "embedded_html.h"
 
 static std::string escapeJS(const std::string& s) {
     std::string out;
@@ -32,22 +27,18 @@ static std::string escapeJS(const std::string& s) {
 }
 
 int main(int argc, char* argv[]) {
+    // Initialize spdlog so TestClient / CoreClient logs flow properly
+    auto console = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+    auto logger = std::make_shared<spdlog::logger>("gui", console);
+    spdlog::set_default_logger(logger);
+    spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] %v");
+    spdlog::set_level(spdlog::level::info);
+
     webview::webview w(false, nullptr);
     w.set_title("NATT - NAT Mesh Client");
     w.set_size(960, 720, WEBVIEW_HINT_NONE);
 
-    std::string html;
-    auto exe_dir = std::filesystem::path(argv[0]).parent_path();
-    auto html_path = exe_dir / "index.html";
-    html = readFile(html_path.string());
-    if (html.empty()) {
-        // Fallback: try relative to cwd
-        html = readFile("cmd/gui/index.html");
-    }
-    if (html.empty()) {
-        html = "<html><body><h1>Error: index.html not found</h1></body></html>";
-    }
-    w.set_html(html);
+    w.set_html(embedded_html());
 
     CoreCallbacks cbs;
 
@@ -102,7 +93,9 @@ int main(int argc, char* argv[]) {
             config.enable_tun       = json.value("enable_tun", false);
             config.tun_name         = json.value("tun_name", "nat%d");
             config.tun_mtu          = json.value("tun_mtu", 1300);
-            client->start(config);
+            if (!client->start(config)) {
+                return R"({"ok":false,"error":"CoreClient failed to start"})";
+            }
             return R"({"ok":true})";
         } catch (const std::exception& e) {
             return R"({"ok":false,"error":")" + escapeJS(e.what()) + R"("})";
