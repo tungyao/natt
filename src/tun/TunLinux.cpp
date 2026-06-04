@@ -258,8 +258,21 @@ public:
                          ip, ifname_);
         }
 
-        // Attach fd to boost::asio stream descriptor
-        stream_.assign(fd_);
+        // Attach fd to boost::asio stream descriptor.
+        // Use non-throwing error_code overload to prevent uncaught exceptions
+        // from escaping the io_context handler and triggering std::terminate().
+        {
+            boost::system::error_code assign_ec;
+            stream_.assign(fd_, assign_ec);
+            if (assign_ec) {
+                spdlog::error("TunLinux: stream assign: {} (fd={})",
+                              assign_ec.message(), fd_);
+                ::close(fd_);
+                fd_ = -1;
+                opened_ = false;
+                return false;
+            }
+        }
 
         spdlog::info("TunLinux: {} configured with IP {}/{}",
                      ifname_, virtual_ip_, prefix_);

@@ -948,24 +948,31 @@ void TestClient::start_tun_bridge() {
     // Create TUN interface (runs on puncher_ioc_)
     net::post(puncher_ioc_, [this, prefix]() {
         if (stopping_) return;
-        tun_ = TunInterface::create(puncher_ioc_);
-        if (!tun_->open(opts_.tun_name, virtual_ip_, prefix, opts_.tun_mtu)) {
-            spdlog::error("TUN bridge: failed to create TUN interface");
-            tun_.reset();
+        try {
+            tun_ = TunInterface::create(puncher_ioc_);
+            if (!tun_->open(opts_.tun_name, virtual_ip_, prefix, opts_.tun_mtu)) {
+                spdlog::error("TUN bridge: failed to create TUN interface");
+                tun_.reset();
+                tun_starting_ = false;
+                return;
+            }
+
+            tun_ready_ = true;
             tun_starting_ = false;
-            return;
+            spdlog::info("TUN bridge: {} configured with {}/{}",
+                         tun_->interfaceName(), virtual_ip_, prefix);
+
+            // Add route for the virtual subnet
+            tun_->addRoute(subnet_);
+
+            // Start reading from TUN (async loop on puncher_ioc_)
+            do_tun_read();
+        } catch (const std::exception& e) {
+            spdlog::error("TUN bridge: exception in setup: {}", e.what());
+            tun_.reset();
+            tun_ready_ = false;
+            tun_starting_ = false;
         }
-
-        tun_ready_ = true;
-        tun_starting_ = false;
-        spdlog::info("TUN bridge: {} configured with {}/{}",
-                     tun_->interfaceName(), virtual_ip_, prefix);
-
-        // Add route for the virtual subnet
-        tun_->addRoute(subnet_);
-
-        // Start reading from TUN (async loop on puncher_ioc_)
-        do_tun_read();
     });
 }
 
