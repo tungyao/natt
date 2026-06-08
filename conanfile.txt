@@ -1,0 +1,6 @@
+[requires]
+openssl/3.3.2
+boost/1.86.0
+
+[generators]
+CMakeDeps
