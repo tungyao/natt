@@ -108,7 +108,7 @@ add_executable(natmesh-server
     ${LIB_HEADERS}
 )
 setup_target(natmesh-server)
-target_link_libraries(natmesh-server PRIVATE yaml-cpp sqlite3)
+target_link_libraries(natmesh-server PRIVATE yaml-cpp SQLite::SQLite3)
 
 # ── stun_server ──────────────────────────────────────────────
 add_executable(stun_server

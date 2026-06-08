@@ -1,6 +1,10 @@
 [requires]
 openssl/3.3.2
 boost/1.86.0
+nlohmann_json/3.11.3
+spdlog/1.14.1
+yaml-cpp/0.8.0
+sqlite3/3.45.1
 
 [generators]
 CMakeDeps
