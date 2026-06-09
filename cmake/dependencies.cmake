@@ -8,7 +8,8 @@ include(FetchContent)
 # First configure:  conan install . -of=build --build=missing
 # Subsequent:       cmake -B build -DCMAKE_BUILD_TYPE=Release
 
-if(NOT EXISTS "${CMAKE_BINARY_DIR}/OpenSSLConfig.cmake")
+if(NOT EXISTS "${CMAKE_BINARY_DIR}/OpenSSLConfig.cmake" AND
+   NOT EXISTS "${CMAKE_BINARY_DIR}/generators/OpenSSLConfig.cmake")
     find_program(CONAN_CMD conan REQUIRED)
     message(STATUS "Conan: installing dependencies...")
     execute_process(
@@ -21,8 +22,8 @@ if(NOT EXISTS "${CMAKE_BINARY_DIR}/OpenSSLConfig.cmake")
     endif()
 endif()
 
-list(APPEND CMAKE_PREFIX_PATH "${CMAKE_BINARY_DIR}")
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_BINARY_DIR}")
+list(APPEND CMAKE_PREFIX_PATH "${CMAKE_BINARY_DIR}" "${CMAKE_BINARY_DIR}/generators")
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_BINARY_DIR}" "${CMAKE_BINARY_DIR}/generators")
 
 find_package(OpenSSL       REQUIRED CONFIG)
 find_package(Boost         REQUIRED CONFIG)

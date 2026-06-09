@@ -82,7 +82,6 @@ set(COMMON_INCLUDES
 
 set(COMMON_LIBS
     Boost::headers
-    Boost::system
     OpenSSL::Crypto
     OpenSSL::SSL
     nlohmann_json::nlohmann_json

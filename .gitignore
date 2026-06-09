@@ -8,3 +8,4 @@ test_b64.cpp
 .DS_Store
 *.swp
 *.swo
+CMakeUserPresets.json
