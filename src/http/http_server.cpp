@@ -1021,6 +1021,7 @@ void HttpServer::handle_wss_upgrade(std::shared_ptr<beast::ssl_stream<beast::tcp
 
                 spdlog::info("WSS disconnected: node_id={}", node_id);
                 node_registry_.updateSessionState(node_id, false, "grace", "ws_disconnected");
+                node_registry_.updateTransportState(node_id, "unknown", 0);
                 session_mgr_.removeSession(node_id);
                 device_svc_.set_offline(node_id);
 

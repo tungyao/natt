@@ -142,6 +142,24 @@ void TestClient::report_transport_state(const std::string& mode, int64_t rtt_ms)
 bool TestClient::connect_control_channel(bool reconnecting) {
     if (stopping_) return false;
 
+    if (reconnecting) {
+        // Reset P2P state so fresh hole punching can start on reconnect.
+        // The old UDP socket is stale (NAT mapping lost, peer endpoint unknown),
+        // so we must tear down and restart from scratch.
+        punch_success_ = false;
+        punch_done_ = false;
+        mode_ = ClientMode::PUNCHING;
+        if (puncher_) {
+            puncher_->setPunchCallback(nullptr);
+            puncher_->setPacketCallback(nullptr);
+            puncher_->setPeerPacketCallback(nullptr);
+            puncher_->setRelayPacketCallback(nullptr);
+            puncher_->setRelayEventCallback(nullptr);
+            puncher_->stop();
+            puncher_.reset();
+        }
+    }
+
     if (ws_) {
         ws_->setMessageCallback(nullptr);
         ws_->close();
@@ -623,10 +641,22 @@ StunResult TestClient::queryStun(const std::string& stun_host, uint16_t stun_por
 void TestClient::on_punch_start(const nlohmann::json& data) {
     if (stopping_) return;
 
-    // If we already have a successful P2P connection or are done punching,
-    // ignore duplicate punch_start
-    if (punch_success_.load() || punch_done_.load() || puncher_) {
-        spdlog::info("punch_start ignored: already connected or punching in progress");
+    // If we already completed a P2P attempt (success or failure), reset state
+    // and allow a fresh punch. This is critical for re-punching after a peer
+    // disconnects and reconnects — both sides must participate in the new attempt.
+    if (punch_success_.load() || punch_done_.load()) {
+        spdlog::info("punch_start: resetting previous P2P state for re-punch "
+                      "(success={}, done={})", punch_success_.load(), punch_done_.load());
+        punch_success_ = false;
+        punch_done_ = false;
+        mode_ = ClientMode::PUNCHING;
+        if (puncher_) {
+            puncher_->setPunchCallback(nullptr);
+            puncher_->stop();
+            puncher_.reset();
+        }
+    } else if (puncher_) {
+        spdlog::info("punch_start ignored: already punching in progress");
         return;
     }
 
