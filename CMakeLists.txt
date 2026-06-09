@@ -98,7 +98,11 @@ set(COMMON_LIBS
 macro(setup_target TARGET)
     target_include_directories(${TARGET} PRIVATE ${COMMON_INCLUDES})
     target_link_libraries(${TARGET} PRIVATE ${COMMON_LIBS})
-    target_compile_options(${TARGET} PRIVATE -Wall -Wextra -Wpedantic -Wno-unused-parameter)
+    if(MSVC)
+        target_compile_options(${TARGET} PRIVATE /W4 /permissive- /wd4100)
+    else()
+        target_compile_options(${TARGET} PRIVATE -Wall -Wextra -Wpedantic -Wno-unused-parameter)
+    endif()
 endmacro()
 
 # ── natmesh-server (with DB, yaml-cpp) ──────────────────────
@@ -141,7 +145,11 @@ target_link_libraries(natcore PUBLIC ${COMMON_LIBS} PRIVATE yaml-cpp)
 # ── natt-cli ──────────────────────────────────────────────────
 add_executable(natt-cli cmd/client/main.cpp)
 target_link_libraries(natt-cli PRIVATE natcore yaml-cpp)
-target_compile_options(natt-cli PRIVATE -Wall -Wextra -Wpedantic -Wno-unused-parameter)
+if(MSVC)
+    target_compile_options(natt-cli PRIVATE /W4 /permissive- /wd4100)
+else()
+    target_compile_options(natt-cli PRIVATE -Wall -Wextra -Wpedantic -Wno-unused-parameter)
+endif()
 
 # ── natt-gui (optional, requires WebKitGTK) ─────────────────────
 
