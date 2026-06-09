@@ -4,6 +4,10 @@
 
 void SessionManager::registerSession(const std::string& node_id, WsSessionPtr session) {
     std::unique_lock<std::shared_mutex> lock(mutex_);
+    auto it = sessions_.find(node_id);
+    if (it != sessions_.end()) {
+        it->second->markStale();
+    }
     sessions_[node_id] = std::move(session);
     spdlog::info("SessionManager: registered node_id={}, total={}", node_id, sessions_.size());
 }

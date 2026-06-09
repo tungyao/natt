@@ -35,6 +35,9 @@ public:
     virtual const std::string& node_id() const = 0;
     virtual const std::string& network_id() const = 0;
     virtual bool is_authenticated() const = 0;
+    // Mark this session as stale (replaced by a newer session).
+    // Stale sessions skip disconnect callbacks to avoid races on reconnect.
+    virtual void markStale() {}
 };
 
 using SessionPtr = std::shared_ptr<ISession>;
@@ -98,6 +101,8 @@ public:
     const std::string& network_id() const override { return network_id_; }
     bool is_authenticated() const override { return authenticated_; }
 
+    void markStale() override { stale_ = true; }
+
     // Store the HTTP request for async_accept
     http::request<http::string_body> http_request_;
 
@@ -134,6 +139,7 @@ private:
     int heartbeat_timeout_sec_;
     std::chrono::steady_clock::time_point last_heartbeat_;
     bool use_node_auth_ = false;
+    bool stale_ = false;
 };
 
 } // namespace beast_ws

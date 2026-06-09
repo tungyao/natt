@@ -58,6 +58,7 @@ public:
     const std::string& node_id() const override { return node_id_; }
     const std::string& network_id() const override { return network_id_; }
     bool is_authenticated() const override { return authenticated_; }
+    void markStale() override { stale_ = true; }
 
 private:
     void do_ws_accept();
@@ -93,6 +94,7 @@ private:
     int heartbeat_timeout_sec_;
     std::chrono::steady_clock::time_point last_heartbeat_;
     bool use_node_auth_ = false;
+    bool stale_ = false;
 };
 
 } // namespace beast_ws

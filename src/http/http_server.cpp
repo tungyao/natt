@@ -1014,11 +1014,6 @@ void HttpServer::handle_wss_upgrade(std::shared_ptr<beast::ssl_stream<beast::tcp
             [this](const std::string& node_id) {
                 if (shutting_down_) return;
 
-                if (session_mgr_.hasSession(node_id)) {
-                    spdlog::debug("Ignoring stale WSS disconnect for node_id={}", node_id);
-                    return;
-                }
-
                 spdlog::info("WSS disconnected: node_id={}", node_id);
                 node_registry_.updateSessionState(node_id, false, "grace", "ws_disconnected");
                 node_registry_.updateTransportState(node_id, "unknown", 0);

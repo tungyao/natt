@@ -114,7 +114,7 @@ void WssSession::do_read() {
                     spdlog::debug("WSS read error: {}", ec.message());
                 }
                 if (ec != boost::asio::error::operation_aborted &&
-                    ec != websocket::error::closed &&
+                    !self->stale_ &&
                     !self->node_id_.empty() && self->disconnect_handler_) {
                     self->disconnect_handler_(self->node_id_);
                 }
@@ -165,7 +165,7 @@ void WssSession::check_heartbeat() {
             auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
                 now - self->last_heartbeat_).count();
 
-            if (elapsed >= self->heartbeat_timeout_sec_) {
+            if (!self->stale_ && elapsed >= self->heartbeat_timeout_sec_) {
                 spdlog::warn("WSS heartbeat timeout for node_id={}", self->node_id_);
                 if (!self->node_id_.empty() && self->disconnect_handler_) {
                     self->disconnect_handler_(self->node_id_);
