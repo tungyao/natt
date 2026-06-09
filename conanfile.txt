@@ -10,5 +10,4 @@ sqlite3/3.53.1
 CMakeDeps
 CMakeToolchain
 
-[layout]
-cmake_layout
+
