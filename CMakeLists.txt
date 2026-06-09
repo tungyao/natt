@@ -9,6 +9,8 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
+option(BUILD_GUI "Build the desktop GUI client (requires WebKitGTK)" ON)
+
 # ── Platform-specific setup ───────────────────────────────────
 if(WIN32)
     set(PLATFORM_TUN_SRC src/tun/TunWindows.cpp)
@@ -141,27 +143,27 @@ add_executable(natt-cli cmd/client/main.cpp)
 target_link_libraries(natt-cli PRIVATE natcore yaml-cpp)
 target_compile_options(natt-cli PRIVATE -Wall -Wextra -Wpedantic -Wno-unused-parameter)
 
-# ── natt-gui ────────────────────────────────────────────────────
+# ── natt-gui (optional, requires WebKitGTK) ─────────────────────
 
-# Embed index.html as a hex array directly into the exe binary.
-# Uses a header file with inline function so no extra .cpp compilation needed.
-set(_gui_gen_dir "${CMAKE_CURRENT_BINARY_DIR}/generated")
-set(_gui_hdr "${_gui_gen_dir}/embedded_html.h")
-file(READ "${CMAKE_CURRENT_SOURCE_DIR}/cmd/gui/index.html" _gui_hex HEX)
-string(REGEX REPLACE "(..)" "0x\\1," _gui_arr "${_gui_hex}")
-file(WRITE "${_gui_hdr}"
-    "#pragma once\n"
-    "#include <string>\n"
-    "inline const std::string& embedded_html() {\n"
-    "    static const unsigned char d[] = { ${_gui_arr} };\n"
-    "    static const std::string s(reinterpret_cast<const char*>(d), sizeof(d));\n"
-    "    return s;\n"
-    "}\n"
-)
+if(BUILD_GUI)
+    set(_gui_gen_dir "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    set(_gui_hdr "${_gui_gen_dir}/embedded_html.h")
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/cmd/gui/index.html" _gui_hex HEX)
+    string(REGEX REPLACE "(..)" "0x\\1," _gui_arr "${_gui_hex}")
+    file(WRITE "${_gui_hdr}"
+        "#pragma once\n"
+        "#include <string>\n"
+        "inline const std::string& embedded_html() {\n"
+        "    static const unsigned char d[] = { ${_gui_arr} };\n"
+        "    static const std::string s(reinterpret_cast<const char*>(d), sizeof(d));\n"
+        "    return s;\n"
+        "}\n"
+    )
 
-add_executable(natt-gui cmd/gui/main.cpp)
-target_include_directories(natt-gui PRIVATE "${_gui_gen_dir}")
-target_link_libraries(natt-gui PRIVATE natcore webview::core_static)
+    add_executable(natt-gui cmd/gui/main.cpp)
+    target_include_directories(natt-gui PRIVATE "${_gui_gen_dir}")
+    target_link_libraries(natt-gui PRIVATE natcore webview::core_static)
+endif()
 
 # ── relay_server ─────────────────────────────────────────────
 add_executable(relay_server

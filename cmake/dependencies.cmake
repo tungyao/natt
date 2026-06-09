@@ -37,14 +37,16 @@ message(STATUS "Conan: nlohmann_json ${nlohmann_json_VERSION}, spdlog ${spdlog_V
 message(STATUS "Conan: yaml-cpp ${yaml-cpp_VERSION}, SQLite3 ${SQLite3_VERSION}")
 
 # ── webview (GUI, not in ConanCenter) ──────────────────────────
-FetchContent_Declare(
-    webview
-    GIT_REPOSITORY https://gh-proxy.org/https://github.com/webview/webview.git
-    GIT_TAG 0.12.0
-    GIT_SHALLOW TRUE
-)
-FetchContent_MakeAvailable(webview)
-message(STATUS "webview: ${webview_SOURCE_DIR}")
+if(BUILD_GUI)
+    FetchContent_Declare(
+        webview
+        GIT_REPOSITORY https://gh-proxy.org/https://github.com/webview/webview.git
+        GIT_TAG 0.12.0
+        GIT_SHALLOW TRUE
+    )
+    FetchContent_MakeAvailable(webview)
+    message(STATUS "webview: ${webview_SOURCE_DIR}")
+endif()
 
 # ── MSYS2 / MinGW cmake config path hint ─────────────────────
 if(WIN32 AND NOT MSVC)
