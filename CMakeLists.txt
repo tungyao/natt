@@ -159,11 +159,11 @@ if(BUILD_GUI)
     add_executable(natt-gui cmd/gui/main.cpp)
     target_link_libraries(natt-gui PRIVATE natcore Qt6::Core Qt6::Widgets)
     if(MSVC)
-        # Qt6 from ConanCenter was built with the pre-standard coroutine
-        # ABI (_COROUTINE_ABI=1).  MSVC defaults to _COROUTINE_ABI=2 in
-        # C++20/23 mode, which causes LNK2038 at link time.  Override
-        # the ABI via preprocessor to match Qt's binaries.
-        target_compile_definitions(natt-gui PRIVATE _COROUTINE_ABI=1)
+        # Qt6 from ConanCenter was built in C++17 mode, which uses
+        # _COROUTINE_ABI=1.  MSVC defaults to _COROUTINE_ABI=2 in
+        # C++20/23 mode and ignores /Zc:coroutine- (removed in recent
+        # toolchain versions).  Build natt-gui with C++17 to match.
+        set_target_properties(natt-gui PROPERTIES CXX_STANDARD 17)
     endif()
 endif()
 
