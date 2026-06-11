@@ -1,3 +1,4 @@
+---
 name: Build Windows GUI
 
 on:
@@ -16,35 +17,35 @@ on:
 jobs:
   build:
     runs-on: windows-latest
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      
+
       - name: Install Conan
         run: |
           pip install conan
           conan profile detect --force
-      
+
       - name: Install Conan dependencies
         run: |
           conan install . -of=build --build=missing -s compiler.cppstd=23
-      
+
       - name: Configure CMake
         run: |
           cmake -B build -DCMAKE_BUILD_TYPE=${{ github.event.inputs.build_type || 'Release' }} -DBUILD_GUI=ON
-      
+
       - name: Build natt-gui
         run: |
           cmake --build build --target natt-gui --config ${{ github.event.inputs.build_type || 'Release' }}
-      
+
       - name: Upload natt-gui artifact
         uses: actions/upload-artifact@v4
         with:
