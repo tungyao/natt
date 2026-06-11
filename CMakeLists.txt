@@ -9,7 +9,7 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-option(BUILD_GUI "Build the desktop GUI client (requires WebKitGTK)" ON)
+option(BUILD_GUI "Build the desktop GUI client (requires Qt6)" ON)
 
 # ── Platform-specific setup ───────────────────────────────────
 if(WIN32)
