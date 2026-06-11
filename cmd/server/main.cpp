@@ -46,9 +46,12 @@ int main(int argc, char* argv[]) {
             cert_path = argv[++i];
         } else if (arg == "--key-file" && i + 1 < argc) {
             key_path = argv[++i];
+        } else if (arg == "--config" || arg == "-c") {
+            if (i + 1 < argc) config_path = argv[++i];
         } else if (arg == "--help") {
-            std::cout << "Usage: natmesh-server [config.yaml] [options]\n"
+            std::cout << "Usage: natmesh-server [options] [config.yaml]\n"
                       << "Options:\n"
+                      << "  -c, --config <path>     Path to YAML config file (default: config.yaml)\n"
                       << "  --generate-cert         Generate a self-signed TLS certificate and exit\n"
                       << "  --cert-file <path>      Certificate output path (default: server.crt)\n"
                       << "  --key-file <path>       Private key output path (default: server.key)\n"
