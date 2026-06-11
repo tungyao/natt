@@ -158,6 +158,13 @@ if(BUILD_GUI)
 
     add_executable(natt-gui cmd/gui/main.cpp)
     target_link_libraries(natt-gui PRIVATE natcore Qt6::Core Qt6::Widgets)
+    if(MSVC)
+        # Qt6 from ConanCenter was built with the pre-standard coroutine ABI
+        # (/Zc:coroutine- → _COROUTINE_ABI=1). MSVC defaults to the standard
+        # ABI (/Zc:coroutine → _COROUTINE_ABI=2) in C++20/23 mode, which
+        # causes LNK2038 mismatches.  Match Qt's ABI here.
+        target_compile_options(natt-gui PRIVATE /Zc:coroutine-)
+    endif()
 endif()
 
 # ── relay_server ─────────────────────────────────────────────
