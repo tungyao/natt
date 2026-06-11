@@ -1,5 +1,3 @@
-include(FetchContent)
-
 # ── Conan (all dependencies) ───────────────────────────────
 # All third-party libraries are managed via Conan Center.
 # Conan installs them to its cache and generates CMake config
