@@ -13,6 +13,7 @@ if(NOT EXISTS "${CMAKE_BINARY_DIR}/OpenSSLConfig.cmake" AND
     execute_process(
         COMMAND ${CONAN_CMD} install -of "${CMAKE_BINARY_DIR}"
                 "${CMAKE_SOURCE_DIR}" --build=missing
+                -s compiler.cppstd=23
         RESULT_VARIABLE _conan_result
     )
     if(NOT _conan_result EQUAL 0)
