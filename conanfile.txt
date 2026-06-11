@@ -8,9 +8,7 @@ yaml-cpp/0.9.0
 sqlite3/3.53.1
 
 [options]
-# Disable Boost components we don't need and that can cause build
-# failures (e.g. cobalt_io_ssl on Windows with OpenSSL dependency).
-boost:without_cobalt_io_ssl=True
+boost/*:without_cobalt_io_ssl=True
 
 [generators]
 CMakeDeps
