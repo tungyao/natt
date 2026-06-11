@@ -151,26 +151,13 @@ else()
     target_compile_options(natt-cli PRIVATE -Wall -Wextra -Wpedantic -Wno-unused-parameter)
 endif()
 
-# ── natt-gui (optional, requires WebKitGTK) ─────────────────────
+# ── natt-gui (optional, requires Qt6) ─────────────────────────
 
 if(BUILD_GUI)
-    set(_gui_gen_dir "${CMAKE_CURRENT_BINARY_DIR}/generated")
-    set(_gui_hdr "${_gui_gen_dir}/embedded_html.h")
-    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/cmd/gui/index.html" _gui_hex HEX)
-    string(REGEX REPLACE "(..)" "0x\\1," _gui_arr "${_gui_hex}")
-    file(WRITE "${_gui_hdr}"
-        "#pragma once\n"
-        "#include <string>\n"
-        "inline const std::string& embedded_html() {\n"
-        "    static const unsigned char d[] = { ${_gui_arr} };\n"
-        "    static const std::string s(reinterpret_cast<const char*>(d), sizeof(d));\n"
-        "    return s;\n"
-        "}\n"
-    )
+    set(CMAKE_AUTOMOC ON)
 
     add_executable(natt-gui cmd/gui/main.cpp)
-    target_include_directories(natt-gui PRIVATE "${_gui_gen_dir}")
-    target_link_libraries(natt-gui PRIVATE natcore webview::core_static)
+    target_link_libraries(natt-gui PRIVATE natcore Qt6::Core Qt6::Widgets)
 endif()
 
 # ── relay_server ─────────────────────────────────────────────
@@ -180,3 +167,8 @@ add_executable(relay_server
     src/relay/RelayServer.cpp
 )
 setup_target(relay_server)
+
+# ── Install ─────────────────────────────────────────────────
+install(TARGETS natmesh-server natt-cli
+        RUNTIME DESTINATION bin)
+install(FILES config.yaml DESTINATION /etc/natt)

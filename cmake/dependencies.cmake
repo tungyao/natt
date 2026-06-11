@@ -36,16 +36,10 @@ message(STATUS "Conan: OpenSSL ${OpenSSL_VERSION}, Boost ${Boost_VERSION}")
 message(STATUS "Conan: nlohmann_json ${nlohmann_json_VERSION}, spdlog ${spdlog_VERSION}")
 message(STATUS "Conan: yaml-cpp ${yaml-cpp_VERSION}, SQLite3 ${SQLite3_VERSION}")
 
-# ── webview (GUI, not in ConanCenter) ──────────────────────────
+# ── Qt6 (GUI) ────────────────────────────────────────────────
 if(BUILD_GUI)
-    FetchContent_Declare(
-        webview
-        GIT_REPOSITORY https://gh-proxy.org/https://github.com/webview/webview.git
-        GIT_TAG 0.12.0
-        GIT_SHALLOW TRUE
-    )
-    FetchContent_MakeAvailable(webview)
-    message(STATUS "webview: ${webview_SOURCE_DIR}")
+    find_package(Qt6 REQUIRED COMPONENTS Core Widgets)
+    message(STATUS "Qt6: ${Qt6_VERSION}")
 endif()
 
 # ── MSYS2 / MinGW cmake config path hint ─────────────────────
