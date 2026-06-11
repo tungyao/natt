@@ -50,7 +50,6 @@ private slots:
         config.stun_addr          = m_stunAddr->text().toStdString();
         config.udp_port           = static_cast<uint16_t>(m_udpPort->text().toUInt());
         config.connect_node_id    = m_connectNode->text().toStdString();
-        config.local_addr         = m_relayAddr->text().toStdString();
         config.relay_addr         = m_relayAddr->text().toStdString();
         config.noise_private_key  = m_noiseKey->text().toStdString();
         config.use_ssl            = m_useWss->isChecked();
@@ -394,8 +393,16 @@ private:
 
     void setState(const QString& state)
     {
-        if (state == "p2p" || state == "relay") {
+        if (state == "p2p") {
             setPunchSuccess();
+            setStateIndicator("p2p", "Connected (P2P)");
+        } else if (state == "relay") {
+            setPunchSuccess();
+            setStateIndicator("relay", "Connected (Relay)");
+        } else if (state == "failed") {
+            setStateIndicator("failed", "Failed");
+        } else {
+            setStateIndicator("connecting", "Connecting...");
         }
     }
 
