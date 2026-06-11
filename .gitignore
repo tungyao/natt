@@ -9,3 +9,4 @@ test_b64.cpp
 *.swp
 *.swo
 CMakeUserPresets.json
+__pycache__/
