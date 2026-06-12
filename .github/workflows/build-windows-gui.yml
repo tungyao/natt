@@ -46,11 +46,61 @@ jobs:
         run: |
           cmake --build build --target natt-gui --config ${{ github.event.inputs.build_type || 'Release' }}
 
+      - name: Package natt-gui with dependencies
+        shell: pwsh
+        run: |
+          $buildType = "${{ github.event.inputs.build_type || 'Release' }}"
+          $stageDir = "natt-gui-package"
+          New-Item -ItemType Directory -Path $stageDir -Force
+
+          Copy-Item "build/$buildType/natt-gui.exe" -Destination $stageDir
+
+          # Copy Conan shared DLLs from the Conan cache
+          $conanPackages = "$env:USERPROFILE\.conan2\p"
+          $dllsToFind = @("libssl-3-x64.dll", "libcrypto-3-x64.dll", "spdlog.dll", "yaml-cpp.dll")
+          foreach ($dll in $dllsToFind) {
+            $found = Get-ChildItem -Path $conanPackages -Recurse -Filter $dll -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found) {
+              Copy-Item $found.FullName -Destination $stageDir
+              Write-Host "Copied $($found.FullName)"
+            } else {
+              Write-Host "Warning: $dll not found in Conan cache"
+            }
+          }
+
+          # Run windeployqt to collect Qt6 DLLs and plugins
+          $qtBin = (Get-ChildItem -Path $conanPackages -Recurse -Filter "windeployqt6.exe" -ErrorAction SilentlyContinue | Select-Object -First 1).DirectoryName
+          if (-not $qtBin) {
+            # Try windeployqt.exe as fallback
+            $qtBin = (Get-ChildItem -Path $conanPackages -Recurse -Filter "windeployqt.exe" -ErrorAction SilentlyContinue | Select-Object -First 1).DirectoryName
+          }
+          if ($qtBin) {
+            Write-Host "Found windeployqt at: $qtBin"
+            & "$qtBin/windeployqt6.exe" "$stageDir/natt-gui.exe" --no-translations 2>&1 | Write-Host
+          } else {
+            Write-Host "Warning: windeployqt not found, copying Qt6 DLLs manually"
+            $qtDlls = @("Qt6Core.dll", "Qt6Gui.dll", "Qt6Widgets.dll")
+            foreach ($dll in $qtDlls) {
+              $found = Get-ChildItem -Path $conanPackages -Recurse -Filter $dll -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($found) {
+                Copy-Item $found.FullName -Destination $stageDir
+              }
+            }
+            # Copy platforms plugin
+            $platformsDir = Join-Path $stageDir "platforms"
+            New-Item -ItemType Directory -Path $platformsDir -Force
+            $qwindows = Get-ChildItem -Path $conanPackages -Recurse -Filter "qwindows.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($qwindows) {
+              Copy-Item $qwindows.FullName -Destination $platformsDir
+            }
+          }
+
+          # List what we packaged
+          Get-ChildItem $stageDir -Recurse | ForEach-Object { Write-Host $_.FullName }
+
       - name: Upload natt-gui artifact
         uses: actions/upload-artifact@v4
         with:
           name: natt-gui-windows-x64
-          path: |
-            build/${{ github.event.inputs.build_type || 'Release' }}/natt-gui.exe
-            build/generators/*.dll
+          path: natt-gui-package/
           if-no-files-found: error
