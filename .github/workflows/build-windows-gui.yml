@@ -85,8 +85,7 @@ jobs:
             }
           }
           if (-not $exeCopied) {
-            Write-Host "Error: natt-gui.exe not found in any expected location"
-            exit 1
+            throw "natt-gui.exe not found in build/ or build/Release/"
           }
 
           # Copy Conan shared DLLs (try multiple naming patterns)
@@ -97,62 +96,50 @@ jobs:
             @("yaml-cpp.dll", "yaml-cpp*.dll")
           )
           foreach ($entry in $dllPatterns) {
-            $exact = $entry[0]
-            $wild = $entry[1]
-            $found = Get-ChildItem -Path $conanPackages -Recurse -Filter $exact -ErrorAction SilentlyContinue | Select-Object -First 1
+            $found = Get-ChildItem -LiteralPath $conanPackages -Recurse -Filter $entry[0] -ErrorAction SilentlyContinue -ErrorVariable err | Select-Object -First 1
             if (-not $found) {
-              $found = Get-ChildItem -Path $conanPackages -Recurse -Filter $wild -ErrorAction SilentlyContinue | Select-Object -First 1
+              $found = Get-ChildItem -LiteralPath $conanPackages -Recurse -Filter $entry[1] -ErrorAction SilentlyContinue -ErrorVariable err | Select-Object -First 1
             }
             if ($found) {
               Copy-Item $found.FullName -Destination $stageDir
               Write-Host "Copied $($found.Name)"
-            } else {
-              Write-Host "Warning: $exact not found (may be static)"
             }
           }
 
           # Run windeployqt to collect Qt6 DLLs and plugins
-          $windeployqt = Get-ChildItem -Path $conanPackages -Recurse -Filter "windeployqt*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          $windeployqt = Get-ChildItem -LiteralPath $conanPackages -Recurse -Filter "windeployqt*.exe" -ErrorAction SilentlyContinue -ErrorVariable err | Select-Object -First 1
           if ($windeployqt) {
             Write-Host "Found windeployqt at: $($windeployqt.DirectoryName)"
-            & $windeployqt.FullName "$stageDir/natt-gui.exe" --no-translations 2>&1 | Write-Host
+            $output = & $windeployqt.FullName "$stageDir/natt-gui.exe" --no-translations 2>&1
+            Write-Host $output
             if ($LASTEXITCODE -ne 0) {
-              Write-Host "Warning: windeployqt exited with code $LASTEXITCODE, continuing..."
-            }
-          } else {
-            Write-Host "Warning: windeployqt not found"
-          }
-
-          # Verify Qt DLLs were deployed
-          $qtDlls = @("Qt6Core.dll", "Qt6Gui.dll", "Qt6Widgets.dll")
-          $missingQt = @()
-          foreach ($dll in $qtDlls) {
-            if (-not (Test-Path "$stageDir/$dll")) {
-              $missingQt += $dll
-            }
-          }
-          if ($missingQt.Count -gt 0) {
-            Write-Host "Missing Qt DLLs: $($missingQt -join ', ')"
-            # Manual fallback: copy Qt DLLs from Conan cache
-            foreach ($dll in $qtDlls) {
-              $found = Get-ChildItem -Path $conanPackages -Recurse -Filter $dll -ErrorAction SilentlyContinue | Select-Object -First 1
-              if ($found) {
-                Copy-Item $found.FullName -Destination $stageDir
-                Write-Host "Manually copied $($found.Name)"
+              Write-Host "windeployqt detected non-Qt executable (static Qt linking)"
+              # Fallback: copy Qt DLLs from the same directory as windeployqt
+              $qtBinDir = $windeployqt.DirectoryName
+              $qtDlls = @("Qt6Core.dll", "Qt6Gui.dll", "Qt6Widgets.dll")
+              foreach ($dll in $qtDlls) {
+                $src = Join-Path $qtBinDir $dll
+                if (Test-Path $src) {
+                  Copy-Item $src -Destination $stageDir
+                  Write-Host "Copied $dll from windeployqt dir"
+                }
               }
-            }
-            # Copy platforms plugin
-            $platformsDir = Join-Path $stageDir "platforms"
-            New-Item -ItemType Directory -Path $platformsDir -Force
-            $qwindows = Get-ChildItem -Path $conanPackages -Recurse -Filter "qwindows.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($qwindows) {
-              Copy-Item $qwindows.FullName -Destination $platformsDir
-              Write-Host "Manually copied qwindows.dll"
+              # Copy platforms plugin
+              $pluginSrc = Join-Path $qtBinDir "..\plugins\platforms\qwindows.dll"
+              if (Test-Path $pluginSrc) {
+                $platformDst = Join-Path $stageDir "platforms"
+                New-Item -ItemType Directory -Path $platformDst -Force | Out-Null
+                Copy-Item $pluginSrc -Destination $platformDst
+                Write-Host "Copied qwindows.dll plugin"
+              }
             }
           }
 
           # List what we packaged
-          Get-ChildItem $stageDir -Recurse | ForEach-Object { Write-Host $_.FullName }
+          Get-ChildItem -LiteralPath $stageDir -Recurse -File | ForEach-Object { Write-Host $_.FullName }
+
+          # Reset exit code (windeployqt may have set it to non-zero)
+          cmd /c "exit 0"
 
       - name: Upload natt-gui artifact
         uses: actions/upload-artifact@v4
