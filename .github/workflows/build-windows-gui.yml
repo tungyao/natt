@@ -46,9 +46,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: build
-          key: cmake-${{ runner.os }}-${{ github.event.inputs.build_type || 'Release' }}-${{ hashFiles('CMakeLists.txt', 'cmake/**', 'include/**', 'src/**', 'cmd/**') }}
+          key: cmake-${{ runner.os }}-${{ github.event.inputs.build_type || 'Release' }}-gui-${{ hashFiles('.github/workflows/build-windows-gui.yml', 'CMakeLists.txt', 'cmake/**', 'include/**', 'src/**', 'cmd/**') }}
           restore-keys: |
-            cmake-${{ runner.os }}-${{ github.event.inputs.build_type || 'Release' }}-
+            cmake-${{ runner.os }}-${{ github.event.inputs.build_type || 'Release' }}-gui-
             cmake-${{ runner.os }}-
 
       - name: Install Conan dependencies
@@ -66,41 +66,79 @@ jobs:
       - name: Package natt-gui with dependencies
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Continue'
           $buildType = "${{ github.event.inputs.build_type || 'Release' }}"
           $stageDir = "natt-gui-package"
+          $conanPackages = "$env:USERPROFILE\.conan2\p"
+
           New-Item -ItemType Directory -Path $stageDir -Force
 
-          Copy-Item "build/$buildType/natt-gui.exe" -Destination $stageDir
+          # Try both possible output locations (Ninja -> build/, VS -> build/$buildType/)
+          $exePaths = @("build/$buildType/natt-gui.exe", "build/natt-gui.exe")
+          $exeCopied = $false
+          foreach ($path in $exePaths) {
+            if (Test-Path $path) {
+              Copy-Item $path -Destination (Join-Path $stageDir "natt-gui.exe")
+              Write-Host "Copied from $path"
+              $exeCopied = $true
+              break
+            }
+          }
+          if (-not $exeCopied) {
+            Write-Host "Error: natt-gui.exe not found in any expected location"
+            exit 1
+          }
 
-          # Copy Conan shared DLLs from the Conan cache
-          $conanPackages = "$env:USERPROFILE\.conan2\p"
-          $dllsToFind = @("libssl-3-x64.dll", "libcrypto-3-x64.dll", "spdlog.dll", "yaml-cpp.dll")
-          foreach ($dll in $dllsToFind) {
-            $found = Get-ChildItem -Path $conanPackages -Recurse -Filter $dll -ErrorAction SilentlyContinue | Select-Object -First 1
+          # Copy Conan shared DLLs (try multiple naming patterns)
+          $dllPatterns = @(
+            @("libssl-3-x64.dll", "libssl-3*.dll"),
+            @("libcrypto-3-x64.dll", "libcrypto-3*.dll"),
+            @("spdlog.dll", "spdlog*.dll"),
+            @("yaml-cpp.dll", "yaml-cpp*.dll")
+          )
+          foreach ($entry in $dllPatterns) {
+            $exact = $entry[0]
+            $wild = $entry[1]
+            $found = Get-ChildItem -Path $conanPackages -Recurse -Filter $exact -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $found) {
+              $found = Get-ChildItem -Path $conanPackages -Recurse -Filter $wild -ErrorAction SilentlyContinue | Select-Object -First 1
+            }
             if ($found) {
               Copy-Item $found.FullName -Destination $stageDir
-              Write-Host "Copied $($found.FullName)"
+              Write-Host "Copied $($found.Name)"
             } else {
-              Write-Host "Warning: $dll not found in Conan cache"
+              Write-Host "Warning: $exact not found (may be static)"
             }
           }
 
           # Run windeployqt to collect Qt6 DLLs and plugins
-          $qtBin = (Get-ChildItem -Path $conanPackages -Recurse -Filter "windeployqt6.exe" -ErrorAction SilentlyContinue | Select-Object -First 1).DirectoryName
-          if (-not $qtBin) {
-            # Try windeployqt.exe as fallback
-            $qtBin = (Get-ChildItem -Path $conanPackages -Recurse -Filter "windeployqt.exe" -ErrorAction SilentlyContinue | Select-Object -First 1).DirectoryName
-          }
-          if ($qtBin) {
-            Write-Host "Found windeployqt at: $qtBin"
-            & "$qtBin/windeployqt6.exe" "$stageDir/natt-gui.exe" --no-translations 2>&1 | Write-Host
+          $windeployqt = Get-ChildItem -Path $conanPackages -Recurse -Filter "windeployqt*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($windeployqt) {
+            Write-Host "Found windeployqt at: $($windeployqt.DirectoryName)"
+            & $windeployqt.FullName "$stageDir/natt-gui.exe" --no-translations 2>&1 | Write-Host
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "Warning: windeployqt exited with code $LASTEXITCODE, continuing..."
+            }
           } else {
-            Write-Host "Warning: windeployqt not found, copying Qt6 DLLs manually"
-            $qtDlls = @("Qt6Core.dll", "Qt6Gui.dll", "Qt6Widgets.dll")
+            Write-Host "Warning: windeployqt not found"
+          }
+
+          # Verify Qt DLLs were deployed
+          $qtDlls = @("Qt6Core.dll", "Qt6Gui.dll", "Qt6Widgets.dll")
+          $missingQt = @()
+          foreach ($dll in $qtDlls) {
+            if (-not (Test-Path "$stageDir/$dll")) {
+              $missingQt += $dll
+            }
+          }
+          if ($missingQt.Count -gt 0) {
+            Write-Host "Missing Qt DLLs: $($missingQt -join ', ')"
+            # Manual fallback: copy Qt DLLs from Conan cache
             foreach ($dll in $qtDlls) {
               $found = Get-ChildItem -Path $conanPackages -Recurse -Filter $dll -ErrorAction SilentlyContinue | Select-Object -First 1
               if ($found) {
                 Copy-Item $found.FullName -Destination $stageDir
+                Write-Host "Manually copied $($found.Name)"
               }
             }
             # Copy platforms plugin
@@ -109,6 +147,7 @@ jobs:
             $qwindows = Get-ChildItem -Path $conanPackages -Recurse -Filter "qwindows.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
             if ($qwindows) {
               Copy-Item $qwindows.FullName -Destination $platformsDir
+              Write-Host "Manually copied qwindows.dll"
             }
           }
 

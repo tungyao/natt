@@ -157,6 +157,10 @@ if(BUILD_GUI)
     set(CMAKE_AUTOMOC ON)
 
     add_executable(natt-gui cmd/gui/main.cpp)
+    set_target_properties(natt-gui PROPERTIES
+        WIN32_EXECUTABLE TRUE
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIG>"
+    )
     target_link_libraries(natt-gui PRIVATE natcore Qt6::Core Qt6::Widgets)
 endif()
 
