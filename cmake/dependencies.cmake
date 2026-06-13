@@ -37,6 +37,7 @@ message(STATUS "Conan: yaml-cpp ${yaml-cpp_VERSION}, SQLite3 ${SQLite3_VERSION}"
 
 # ── Qt6 (GUI) ────────────────────────────────────────────────
 if(BUILD_GUI)
+    set(QT_NO_QTPATHS_DEPLOYMENT_WARNING TRUE)
     find_package(Qt6 REQUIRED COMPONENTS Core Widgets)
     message(STATUS "Qt6: ${Qt6_VERSION}")
 endif()

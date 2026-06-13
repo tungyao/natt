@@ -162,6 +162,13 @@ if(BUILD_GUI)
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIG>"
     )
     target_link_libraries(natt-gui PRIVATE natcore Qt6::Core Qt6::Widgets)
+    if(WIN32)
+        target_compile_definitions(natt-gui PRIVATE QT_STATICPLUGIN)
+        target_link_libraries(natt-gui PRIVATE
+            Qt6::QWindowsIntegrationPlugin
+            Qt6::QModernWindowsStylePlugin
+        )
+    endif()
 endif()
 
 # ── relay_server ─────────────────────────────────────────────

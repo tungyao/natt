@@ -1,4 +1,7 @@
 #include <QApplication>
+#include <QtPlugin>
+Q_IMPORT_PLUGIN(QWindowsIntegrationPlugin)
+Q_IMPORT_PLUGIN(QModernWindowsStylePlugin)
 #include <QMainWindow>
 #include <QWidget>
 #include <QGridLayout>
@@ -16,6 +19,8 @@
 #include <QTimer>
 #include <QScrollBar>
 #include <QDateTime>
+#include <QDir>
+#include <QFile>
 
 #include "natcore/CoreClient.h"
 #include <memory>
@@ -53,7 +58,18 @@ private slots:
         config.relay_addr         = m_relayAddr->text().toStdString();
         config.noise_private_key  = m_noiseKey->text().toStdString();
         config.use_ssl            = m_useWss->isChecked();
-        config.cert_file          = m_certFile->text().toStdString();
+        {
+            QString certText = m_certFile->toPlainText().trimmed();
+            if (!certText.isEmpty()) {
+                QString tmpPath = QDir::temp().filePath("natt_cert.pem");
+                QFile f(tmpPath);
+                if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                    f.write(certText.toUtf8());
+                    f.close();
+                    config.cert_file = tmpPath.toStdString();
+                }
+            }
+        }
         config.enable_tun         = m_enableTun->isChecked();
 
         appendLog("[info] Starting NATT client...");
@@ -158,12 +174,14 @@ private:
         m_connectNode = new QLineEdit;
         m_relayAddr  = new QLineEdit;
         m_noiseKey   = new QLineEdit;
-        m_certFile   = new QLineEdit;
+        m_certFile   = new QPlainTextEdit;
+        m_certFile->setPlaceholderText("Paste CA certificate PEM here...");
+        m_certFile->setObjectName("certEdit");
+        m_certFile->setFixedHeight(80);
 
         m_connectNode->setPlaceholderText("Peer node ID");
         m_relayAddr->setPlaceholderText("127.0.0.1:7000");
         m_noiseKey->setPlaceholderText("Base64 private key");
-        m_certFile->setPlaceholderText("CA cert PEM path");
 
         form->addRow("Node ID",     m_nodeId);
         form->addRow("Network ID",  m_networkId);
@@ -173,9 +191,13 @@ private:
         form->addRow("Connect",     m_connectNode);
         form->addRow("Relay",       m_relayAddr);
         form->addRow("Noise Key",   m_noiseKey);
-        form->addRow("Cert File",   m_certFile);
 
         configLayout->addLayout(form);
+
+        QLabel *certLabel = new QLabel("CERTIFICATE");
+        certLabel->setObjectName("panelTitle");
+        configLayout->addWidget(certLabel);
+        configLayout->addWidget(m_certFile);
 
         m_useWss   = new QCheckBox("Use WSS (TLS)");
         m_enableTun = new QCheckBox("Enable TUN interface");
@@ -312,6 +334,8 @@ private:
             QLabel#noTunLabel { color: #8888aa; font-size: 12px; font-style: italic; }
             QLineEdit { padding: 5px 8px; border: 1px solid #2d2f54; border-radius: 4px; background: #1a1b2e; color: #e0e0f0; font-size: 12px; }
             QLineEdit:focus { border-color: #7c5cfc; }
+            QPlainTextEdit#certEdit { padding: 5px 8px; border: 1px solid #2d2f54; border-radius: 4px; background: #1a1b2e; color: #e0e0f0; font-size: 12px; font-family: 'Cascadia Code', 'Fira Code', monospace; }
+            QPlainTextEdit#certEdit:focus { border-color: #7c5cfc; }
             QCheckBox { font-size: 12px; spacing: 6px; }
             QCheckBox::indicator { width: 16px; height: 16px; }
             QPushButton { padding: 6px 16px; border: none; border-radius: 4px; font-size: 12px; font-weight: 500; }
@@ -459,7 +483,8 @@ private:
     // Config inputs
     QLineEdit *m_nodeId, *m_networkId, *m_controlUrl, *m_stunAddr;
     QLineEdit *m_udpPort, *m_connectNode, *m_relayAddr;
-    QLineEdit *m_noiseKey, *m_certFile;
+    QLineEdit *m_noiseKey;
+    QPlainTextEdit *m_certFile;
     QCheckBox *m_useWss, *m_enableTun;
     QPushButton *m_startBtn, *m_stopBtn;
 

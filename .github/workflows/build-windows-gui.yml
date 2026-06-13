@@ -106,34 +106,8 @@ jobs:
             }
           }
 
-          # Run windeployqt to collect Qt6 DLLs and plugins
-          $windeployqt = Get-ChildItem -LiteralPath $conanPackages -Recurse -Filter "windeployqt*.exe" -ErrorAction SilentlyContinue -ErrorVariable err | Select-Object -First 1
-          if ($windeployqt) {
-            Write-Host "Found windeployqt at: $($windeployqt.DirectoryName)"
-            $output = & $windeployqt.FullName "$stageDir/natt-gui.exe" --no-translations 2>&1
-            Write-Host $output
-            if ($LASTEXITCODE -ne 0) {
-              Write-Host "windeployqt detected non-Qt executable (static Qt linking)"
-              # Fallback: copy Qt DLLs from the same directory as windeployqt
-              $qtBinDir = $windeployqt.DirectoryName
-              $qtDlls = @("Qt6Core.dll", "Qt6Gui.dll", "Qt6Widgets.dll")
-              foreach ($dll in $qtDlls) {
-                $src = Join-Path $qtBinDir $dll
-                if (Test-Path $src) {
-                  Copy-Item $src -Destination $stageDir
-                  Write-Host "Copied $dll from windeployqt dir"
-                }
-              }
-              # Copy platforms plugin
-              $pluginSrc = Join-Path $qtBinDir "..\plugins\platforms\qwindows.dll"
-              if (Test-Path $pluginSrc) {
-                $platformDst = Join-Path $stageDir "platforms"
-                New-Item -ItemType Directory -Path $platformDst -Force | Out-Null
-                Copy-Item $pluginSrc -Destination $platformDst
-                Write-Host "Copied qwindows.dll plugin"
-              }
-            }
-          }
+          # Qt is statically linked (QT_STATICPLUGIN + qt_import_plugins),
+          # so no Qt DLLs or platform plugins need to be deployed.
 
           # List what we packaged
           Get-ChildItem -LiteralPath $stageDir -Recurse -File | ForEach-Object { Write-Host $_.FullName }
